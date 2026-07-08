@@ -11,6 +11,7 @@ from src.config import (
     LLM_MODEL, LLM_BASE_URL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
     EMBED_MODEL, EMBED_BASE_URL, EMBED_BATCH_SIZE,
     RETRIEVAL_TOP_K, RETRIEVAL_HYBRID_ENABLED,
+    RERANK_ENABLED, RERANK_MODEL, RERANK_RECALL_K, RERANK_TOP_K,
     INDEX_NAME, INDEX_DIR,
 )
 from src.embedding.embedder import LawEmbedder
@@ -19,6 +20,7 @@ from src.llm.client import LawLLM, LLMConfig
 from src.rag.engine import RAGEngine
 from src.rag.retriever import FAISSRetriever
 from src.rag.hybrid_retriever import HybridRetriever
+from src.rag.reranker import Reranker, RerankRetriever
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +78,26 @@ def get_engine() -> RAGEngine:
                 vector_retriever=faiss,
                 corpus_path=corpus_path,
             )
-            logger.info(f"混合检索就绪 (BM25 + 向量, BM25权重={RETRIEVAL_BM25_WEIGHT})")
+            logger.info(f"混合检索就绪 (BM25 + 向量)")
         else:
             retriever = FAISSRetriever(store)
             logger.info("纯向量检索就绪")
 
-        _engine = RAGEngine(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K)
-        logger.info(f"RAG 引擎就绪 (索引: {store.doc_count} 条, top_k={RETRIEVAL_TOP_K})")
+        # Reranker 二次精排
+        if RERANK_ENABLED:
+            reranker = Reranker(model_name=RERANK_MODEL)
+            retriever = RerankRetriever(
+                base_retriever=retriever,
+                reranker=reranker,
+                recall_k=RERANK_RECALL_K,
+                top_k=RERANK_TOP_K,
+            )
+            logger.info(
+                f"Reranker 就绪 ({RERANK_MODEL}): "
+                f"粗排{RERANK_RECALL_K} → 精排{RERANK_TOP_K}"
+            )
+
+        _engine = RAGEngine(retriever=retriever, llm=llm, top_k=RERANK_TOP_K if RERANK_ENABLED else RETRIEVAL_TOP_K)
+        logger.info(f"RAG 引擎就绪 (索引: {store.doc_count} 条)")
 
     return _engine
