@@ -46,23 +46,17 @@ async def health():
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     """法律问答（支持多轮）"""
-    import traceback
-    try:
-        engine = get_engine()
-        history = _dicts_to_messages(req.history)
+    engine = get_engine()
+    history = _dicts_to_messages(req.history)
 
-        # 闲聊：不检索
-        if is_casual_query(req.query):
-            answer = engine.llm.chat(req.query, history=history)
-            return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
+    if is_casual_query(req.query):
+        answer = engine.llm.chat(req.query, history=history)
+        return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
 
-        # 法律 RAG
-        docs = engine.retriever.search(req.query, top_k=req.top_k)
-        prompt = engine._build_prompt(req.query, docs)
-        answer = engine.llm.chat(prompt, history=history)
-        return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=docs)
-    except Exception:
-        raise HTTPException(status_code=500, detail=traceback.format_exc())
+    docs = engine.retriever.search(req.query, top_k=req.top_k)
+    prompt = engine._build_prompt(req.query, docs)
+    answer = engine.llm.chat(prompt, history=history)
+    return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=docs)
 
 
 @router.post("/chat/stream")
