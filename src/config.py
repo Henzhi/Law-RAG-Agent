@@ -44,10 +44,10 @@ RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
 RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "false").lower() == "true"
 RETRIEVAL_BM25_WEIGHT = float(os.getenv("RETRIEVAL_BM25_WEIGHT", "0.0"))
 
-# Reranker 二次精排
-RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
+# Reranker 二次精排 (CPU 较慢，建议有 GPU 再开启)
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "false").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "20"))  # 粗排召回数
+RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "10"))  # 粗排召回数
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))          # 精排后返回数
 
 

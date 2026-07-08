@@ -33,7 +33,7 @@ dependencies = [
     # ---- 本地 LLM 客户端（支撑需求：C-2、C-3、NF-2）----
     "ollama~=0.4.0",             # 0.4.9 — 对接本地 Ollama 服务
     "jieba>=0.42.1",
-    "flagembedding>=1.4.0",
+    "sentence-transformers>=3.0",
 ]
 
 [tool.uv]
