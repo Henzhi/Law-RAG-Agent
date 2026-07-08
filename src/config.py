@@ -60,6 +60,20 @@ INDEX_DIR = _PROJECT_ROOT / os.getenv("INDEX_DIR", "data/vector_store")
 
 
 # ---------------------------------------------------------------------------
+# LangGraph Agent
+# ---------------------------------------------------------------------------
+
+AGENT_ENABLED = os.getenv("AGENT_ENABLED", "false").lower() == "true"
+AGENT_MAX_RETRIES = int(os.getenv("AGENT_MAX_RETRIES", "1"))
+
+# ---------------------------------------------------------------------------
+# pgvector
+# ---------------------------------------------------------------------------
+
+PG_ENABLED = os.getenv("PG_ENABLED", "false").lower() == "true"
+PG_CONN = os.getenv("PG_CONN", "postgresql://lawrag:lawrag123@localhost:5432/lawrag")
+
+# ---------------------------------------------------------------------------
 # 服务
 # ---------------------------------------------------------------------------
 

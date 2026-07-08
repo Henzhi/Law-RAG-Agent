@@ -1,5 +1,5 @@
 """
-API 路由定义。支持多轮对话（通过 history 字段）。
+API 路由定义。支持多轮对话 + LangGraph Agent。
 """
 from __future__ import annotations
 
@@ -8,8 +8,9 @@ import json
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 
-from .dependencies import get_engine
+from .dependencies import get_engine, get_agent
 from .models import ChatRequest, ChatResponse, HealthResponse
+from src.config import AGENT_ENABLED
 from src.rag.engine import is_casual_query
 from src.llm.client import Message
 
@@ -17,27 +18,26 @@ router = APIRouter()
 
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
-    """将前端传来的 [{role, content}] 转为 LLM Message 列表"""
     return [Message(msg["role"], msg["content"]) for msg in history if msg.get("content")]
 
 
 @router.get("/health", response_model=HealthResponse)
 async def health():
-    """健康检查"""
     try:
-        engine = get_engine()
-        # 获取 doc_count: 如果是 RerankRetriever 则透传底层
-        retriever = engine.retriever
-        if hasattr(retriever, '_base'):
-            doc_count = retriever._base._store.doc_count if hasattr(retriever._base, '_store') else 0
+        eng = get_engine() if not AGENT_ENABLED else get_agent()
+        if hasattr(eng, "retriever"):
+            r = eng.retriever
+            if hasattr(r, "_base"):
+                doc_count = r._base._store.doc_count if hasattr(r._base, "_store") else 0
+            else:
+                doc_count = r._store.doc_count if hasattr(r, "_store") else 0
         else:
-            doc_count = retriever._store.doc_count if hasattr(retriever, '_store') else 0
+            doc_count = 0
         return HealthResponse(
-            status="ok",
-            version="0.1.0",
-            index_ready=retriever.is_ready(),
+            status="ok", version="0.1.0",
+            index_ready=eng.retriever.is_ready() if hasattr(eng, "retriever") else True,
             doc_count=doc_count,
-            llm_model=engine.llm.model_name,
+            llm_model="qwen2.5:7b",
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -45,10 +45,17 @@ async def health():
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    """法律问答（支持多轮）"""
+    if AGENT_ENABLED:
+        agent = get_agent()
+        result = agent.ask(req.query, history=req.history)
+        return ChatResponse.from_rag_answer(
+            query=result["query"], answer=result["answer"],
+            sources=_dicts_to_retrieved(result.get("retrieved_docs", [])),
+            is_casual=is_casual_query(req.query),
+        )
+
     engine = get_engine()
     history = _dicts_to_messages(req.history)
-
     if is_casual_query(req.query):
         answer = engine.llm.chat(req.query, history=history)
         return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
@@ -61,39 +68,83 @@ def chat(req: ChatRequest):
 
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
-    """流式问答（支持多轮）"""
-    engine = get_engine()
-    history = _dicts_to_messages(req.history)
     casual = is_casual_query(req.query)
 
-    if casual:
+    if AGENT_ENABLED and not casual:
+        agent = get_agent()
+
         def generate():
-            meta = json.dumps({"type": "meta", "sources": [], "is_casual": True}, ensure_ascii=False)
+            q = req.query
+            # 查询改写 (agent 内部)
+            state = {"query": q, "messages": req.history, "rewritten_query": "", "retrieved_docs": [], "answer": "", "validation_passed": False, "retry_count": 0}
+            after_rw = agent._rewrite_query(state)
+            rw_q = after_rw.get("rewritten_query", q)
+
+            # 检索
+            after_ret = agent._retrieve({"query": q, "rewritten_query": rw_q, "messages": req.history})
+            docs = after_ret.get("retrieved_docs", [])
+
+            sources = [
+                {"law_name": d.get("law_name", ""), "chapter": d.get("chapter", ""),
+                 "article_range": d.get("article_range", ""), "citation": d.get("citation", ""),
+                 "score": 0.0}
+                for d in docs
+            ]
+            meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False, "rewritten": rw_q}, ensure_ascii=False)
             yield f"data: {meta}\n\n"
-            for token in engine.llm.chat_stream(req.query, history=history):
+
+            # 流式输出
+            for token in agent.stream(req.query, history=req.history):
                 chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
             yield "data: [DONE]\n\n"
     else:
-        docs = engine.retriever.search(req.query, top_k=engine.top_k)
-        prompt = engine._build_prompt(req.query, docs)
+        engine = get_engine()
+        history = _dicts_to_messages(req.history)
 
-        def generate():
-            sources = [
-                {"law_name": s.law_name, "chapter": s.chapter,
-                 "article_range": s.article_range, "citation": s.citation,
-                 "score": float(s.score)}
-                for s in docs
-            ]
-            meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False}, ensure_ascii=False)
-            yield f"data: {meta}\n\n"
-            for token in engine.llm.chat_stream(prompt, history=history):
-                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                yield f"data: {chunk}\n\n"
-            yield "data: [DONE]\n\n"
+        if casual:
+            def generate():
+                meta = json.dumps({"type": "meta", "sources": [], "is_casual": True}, ensure_ascii=False)
+                yield f"data: {meta}\n\n"
+                for token in engine.llm.chat_stream(req.query, history=history):
+                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
+        else:
+            docs = engine.retriever.search(req.query, top_k=engine.top_k)
+            prompt = engine._build_prompt(req.query, docs)
+
+            def generate():
+                sources = [
+                    {"law_name": s.law_name, "chapter": s.chapter,
+                     "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
+                    for s in docs
+                ]
+                meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False}, ensure_ascii=False)
+                yield f"data: {meta}\n\n"
+                for token in engine.llm.chat_stream(prompt, history=history):
+                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
+                yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def _dicts_to_retrieved(docs: list[dict]) -> list:
+    """将 agent 返回的 dict 转为 RetrievedDoc 兼容格式"""
+    result = []
+    for d in docs:
+        result.append(type("RetrievedDoc", (), {
+            "law_name": d.get("law_name", ""),
+            "chapter": d.get("chapter", ""),
+            "section": d.get("section", ""),
+            "article_range": d.get("article_range", ""),
+            "citation": d.get("citation", ""),
+            "content": d.get("content", ""),
+            "score": float(d.get("score", 0)),
+        })())
+    return result

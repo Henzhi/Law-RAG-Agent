@@ -1,0 +1,43 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    container_name: lawrag-db
+    environment:
+      POSTGRES_DB: lawrag
+      POSTGRES_USER: lawrag
+      POSTGRES_PASSWORD: lawrag123
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lawrag -d lawrag"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  app:
+    build: .
+    container_name: lawrag-app
+    ports:
+      - "8000:8000"
+    environment:
+      - PG_HOST=db
+      - PG_PORT=5432
+      - PG_DATABASE=lawrag
+      - PG_USER=lawrag
+      - PG_PASSWORD=lawrag123
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - EMBED_MODEL=${EMBED_MODEL:-bge-m3}
+      - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
+      - RERANK_ENABLED=false
+      - INDEX_NAME=${INDEX_NAME:-law_index}
+    depends_on:
+      db:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:

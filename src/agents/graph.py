@@ -1,0 +1,299 @@
+"""
+LangGraph 多 Agent 工作流。
+
+流程:
+    用户查询 → 查询改写 → 检索 → 生成回答 → 答案校验
+                                      ↑              │
+                                      └── 不通过 ────┘
+"""
+from __future__ import annotations
+
+import logging
+from typing import TypedDict, Annotated, Iterator
+
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+
+from src.llm.client import LawLLM, Message as LLMMessage
+from src.rag.retriever import BaseRetriever, RetrievedDoc
+from src.rag.engine import RAG_PROMPT_TEMPLATE, is_casual_query
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+class AgentState(TypedDict):
+    query: str                      # 原始用户查询
+    rewritten_query: str            # 改写后的查询
+    messages: Annotated[list, add_messages]  # 对话历史
+    retrieved_docs: list[dict]      # 检索结果
+    answer: str                     # 生成的回答
+    validation_passed: bool         # 校验是否通过
+    retry_count: int                # 重试次数
+
+
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+REWRITE_PROMPT = """你是一个法律查询改写助手。将用户的自然语言问题改写为更适合法律条文检索的查询。
+
+## 规则
+1. 保留原问题的核心法律概念
+2. 补充不完整的法律名称（如"那个法"要补全）
+3. 使用正式的法律术语
+4. 只输出改写后的查询，不要解释
+
+## 对话历史
+{history}
+
+## 用户问题
+{query}
+
+改写后的查询："""
+
+
+VALIDATOR_PROMPT = """你是一个法律回答质量审核员。审核以下回答是否合格。
+
+## 审核标准
+1. 回答是否引用了具体的法律名称？（如"治安管理处罚法"）
+2. 回答是否标注了具体的条款号？（如"第十条"）
+3. 回答是否基于检索到的条文，而非凭空编造？
+
+## 检索到的条文
+{context}
+
+## LLM 生成的回答
+{answer}
+
+## 判定
+请回答 PASS（合格）或 FAIL（不合格），然后简短说明原因。"""
+
+
+# ---------------------------------------------------------------------------
+# 多 Agent 引擎
+# ---------------------------------------------------------------------------
+
+class LawAgentGraph:
+    """LangGraph 多 Agent 法律问答引擎
+
+    用法:
+        agent = LawAgentGraph(retriever, llm)
+        for token in agent.stream("行政拘留最长多久", history=[]):
+            print(token, end="")
+    """
+
+    def __init__(
+        self,
+        retriever: BaseRetriever,
+        llm: LawLLM,
+        top_k: int = 5,
+        max_retries: int = 1,
+    ):
+        self.retriever = retriever
+        self.llm = llm
+        self.top_k = top_k
+        self.max_retries = max_retries
+        self._graph = self._build_graph()
+
+    # ------------------------------------------------------------------
+    # 图构建
+    # ------------------------------------------------------------------
+
+    def _build_graph(self) -> StateGraph:
+        builder = StateGraph(AgentState)
+
+        builder.add_node("rewrite", self._rewrite_query)
+        builder.add_node("retrieve", self._retrieve)
+        builder.add_node("generate", self._generate)
+        builder.add_node("validate", self._validate)
+
+        builder.set_entry_point("rewrite")
+        builder.add_edge("rewrite", "retrieve")
+        builder.add_edge("retrieve", "generate")
+        builder.add_conditional_edges(
+            "validate",
+            self._should_retry,
+            {"retry": "generate", "end": END},
+        )
+        builder.add_edge("generate", "validate")
+
+        return builder.compile()
+
+    # ------------------------------------------------------------------
+    # 节点实现
+    # ------------------------------------------------------------------
+
+    def _rewrite_query(self, state: AgentState) -> dict:
+        query = state["query"]
+        history = state.get("messages", [])
+
+        # 简短查询直接通过，不浪费 LLM 调用
+        if len(query) <= 8 or is_casual_query(query):
+            return {"rewritten_query": query}
+
+        # 构建历史文本
+        hist_text = ""
+        if history:
+            recent = history[-6:]  # 最近 3 轮
+            hist_text = "\n".join(
+                f"{m.get('role','')}: {str(m.get('content',''))[:200]}"
+                for m in recent
+            )
+
+        prompt = REWRITE_PROMPT.format(query=query, history=hist_text or "（首次对话）")
+        rewritten = self.llm.chat(prompt, system_prompt="你是一个法律查询改写助手，只输出改写后的查询。").strip()
+        # 去掉可能的引号包裹
+        rewritten = rewritten.strip('"').strip("'").strip()
+        if not rewritten or len(rewritten) < 2:
+            rewritten = query
+
+        logger.info(f"查询改写: '{query}' → '{rewritten}'")
+        return {"rewritten_query": rewritten}
+
+    def _retrieve(self, state: AgentState) -> dict:
+        q = state.get("rewritten_query", state["query"])
+        docs = self.retriever.search(q, top_k=self.top_k)
+        return {
+            "retrieved_docs": [
+                {"content": d.content, "law_name": d.law_name,
+                 "article_range": d.article_range, "citation": d.citation}
+                for d in docs
+            ]
+        }
+
+    def _generate(self, state: AgentState) -> dict:
+        docs = state.get("retrieved_docs", [])
+        query = state.get("rewritten_query", state["query"])
+
+        # 构建上下文
+        context_parts = []
+        seen = set()
+        for i, doc in enumerate(docs, 1):
+            key = (doc.get("law_name"), doc.get("article_range"))
+            if key in seen:
+                continue
+            seen.add(key)
+            head = f"### {i}. {doc.get('citation', '')}"
+            content = doc.get("content", "")
+            if "\n" in content and content.startswith("【"):
+                content = content.split("\n", 1)[1]
+            context_parts.append(f"{head}\n{content.strip()}")
+
+        ctx = "\n\n".join(context_parts) if context_parts else "（未找到相关条文）"
+        prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query)
+
+        # 附加历史
+        history = []
+        for m in state.get("messages", [])[-6:]:
+            role = m.get("role", "user")
+            content = str(m.get("content", ""))[:300]
+            if role in ("user", "assistant"):
+                history.append(LLMMessage(role, content))
+
+        answer = self.llm.chat(prompt, history=history if history else None)
+        return {"answer": answer}
+
+    def _validate(self, state: AgentState) -> dict:
+        answer = state.get("answer", "")
+        docs = state.get("retrieved_docs", [])
+        retry = state.get("retry_count", 0)
+
+        # 无检索结果时直接通过
+        if not docs:
+            return {"validation_passed": True}
+
+        # 构建简化上下文
+        ctx = "\n".join(
+            f"- {d.get('citation','')}: {d.get('content','')[:100]}"
+            for d in docs[:5]
+        )
+
+        prompt = VALIDATOR_PROMPT.format(context=ctx, answer=answer[:800])
+        result = self.llm.chat(prompt, system_prompt="你是一个审核员。只输出 PASS 或 FAIL。").strip().upper()
+
+        passed = "PASS" in result
+        if not passed and retry < self.max_retries:
+            logger.info(f"校验未通过，重试 {retry + 1}/{self.max_retries}")
+            return {"validation_passed": False, "retry_count": retry + 1}
+
+        return {"validation_passed": True}
+
+    def _should_retry(self, state: AgentState) -> str:
+        if not state.get("validation_passed", True):
+            return "retry"
+        return "end"
+
+    # ------------------------------------------------------------------
+    # 公开接口
+    # ------------------------------------------------------------------
+
+    def ask(self, query: str, history: list[dict] | None = None) -> dict:
+        """同步问答，返回完整 state"""
+        initial = {
+            "query": query,
+            "messages": history or [],
+            "rewritten_query": "",
+            "retrieved_docs": [],
+            "answer": "",
+            "validation_passed": False,
+            "retry_count": 0,
+        }
+        result = self._graph.invoke(initial)
+        return result
+
+    def stream(self, query: str, history: list[dict] | None = None) -> Iterator[str]:
+        """流式问答 - 先走 Agent 工作流，再流式输出最终回答
+
+        注意：LangGraph 本身不原生支持逐 token 流式，
+        这里先走完 agent 流程拿到最终 answer，再 yield 回去。
+        """
+        # 闲聊直接返回
+        if is_casual_query(query):
+            for token in self.llm.chat_stream(query):
+                yield token
+            return
+
+        # 走 Agent 流程获取改写 + 检索 + 校验后的 prompt
+        initial = {
+            "query": query,
+            "messages": history or [],
+            "rewritten_query": "",
+            "retrieved_docs": [],
+            "answer": "",
+            "validation_passed": False,
+            "retry_count": 0,
+        }
+
+        # 手动走流程获取最终 prompt（不用 invoke 等完整结果）
+        q = query
+        if len(query) > 8:
+            state_after_rewrite = self._rewrite_query(initial)
+            q = state_after_rewrite.get("rewritten_query", query)
+
+        state_after_retrieve = self._retrieve({"query": q, "rewritten_query": q, "messages": history or []})
+        docs = state_after_retrieve.get("retrieved_docs", [])
+
+        # 构建 prompt + 流式输出
+        seen = set()
+        parts = []
+        for i, doc in enumerate(docs, 1):
+            key = (doc.get("law_name"), doc.get("article_range"))
+            if key in seen:
+                continue
+            seen.add(key)
+            head = f"### {i}. {doc.get('citation', '')}"
+            content = doc.get("content", "")
+            if "\n" in content and content.startswith("【"):
+                content = content.split("\n", 1)[1]
+            parts.append(f"{head}\n{content.strip()}")
+
+        ctx = "\n\n".join(parts) if parts else "（未找到相关条文）"
+        prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=q)
+
+        # 流式输出
+        for token in self.llm.chat_stream(prompt):
+            yield token
