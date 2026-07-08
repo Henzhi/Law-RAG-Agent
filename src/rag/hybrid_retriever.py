@@ -163,28 +163,58 @@ class HybridRetriever(BaseRetriever):
     # ------------------------------------------------------------------
 
     def save_corpus(self, path: Path) -> None:
-        """保存 BM25 语料到磁盘（加速下次加载）"""
+        """保存 BM25 语料到磁盘（含文档元数据，加速下次加载）"""
         path.parent.mkdir(parents=True, exist_ok=True)
+        meta_list = []
+        for doc in self._corpus_docs:
+            meta_list.append({
+                "law_name": doc.law_name,
+                "article_range": doc.article_range,
+                "chapter": doc.chapter,
+                "section": doc.section,
+                "chunk_type": doc.chunk_type,
+            })
         with open(path, "wb") as f:
             pickle.dump({
                 "texts": self._corpus_texts,
                 "tokenized": self._tokenized,
+                "meta": meta_list,
             }, f)
 
     @classmethod
     def from_corpus_file(
         cls,
         vector_retriever: FAISSRetriever,
-        corpus_docs: list[RetrievedDoc],
         corpus_path: Path,
         bm25_weight: float | None = None,
     ) -> "HybridRetriever":
-        """从磁盘加载 BM25 语料"""
+        """从磁盘加载 BM25 语料（含元数据，无需额外传 docs）"""
         with open(corpus_path, "rb") as f:
             data = pickle.load(f)
+
+        texts = data["texts"]
+        meta_list = data.get("meta", [])
+
+        # 重建 corpus_docs
+        corpus_docs = []
+        for i, meta in enumerate(meta_list):
+            corpus_docs.append(RetrievedDoc(
+                content=texts[i] if i < len(texts) else "",
+                score=0.0,
+                law_name=meta.get("law_name", ""),
+                chapter=meta.get("chapter", ""),
+                section=meta.get("section", ""),
+                article_range=meta.get("article_range", ""),
+                chunk_type=meta.get("chunk_type", ""),
+            ))
+
+        # 补齐可能缺失的 doc
+        while len(corpus_docs) < len(texts):
+            corpus_docs.append(RetrievedDoc(content=texts[len(corpus_docs)], score=0.0))
+
         instance = cls.__new__(cls)
         instance._vector = vector_retriever
-        instance._corpus_texts = data["texts"]
+        instance._corpus_texts = texts
         instance._corpus_docs = corpus_docs
         instance._bm25_weight = bm25_weight if bm25_weight is not None else RETRIEVAL_BM25_WEIGHT
         instance._tokenized = data["tokenized"]

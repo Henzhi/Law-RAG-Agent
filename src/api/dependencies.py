@@ -71,25 +71,12 @@ def get_engine() -> RAGEngine:
         from pathlib import Path
         corpus_path = Path(store.store_dir) / "bm25_corpus.pkl"
         if RETRIEVAL_HYBRID_ENABLED and corpus_path.exists():
-            # 从缓存加载 BM25 语料
             faiss = FAISSRetriever(store)
-            # 需要先从 FAISS 获取文档列表来构建 RetrievedDoc 映射
-            # 简化：直接用 FAISS 做纯向量，BM25 语料从缓存加载
-            import pickle
-            with open(corpus_path, "rb") as f:
-                data = pickle.load(f)
-            ret_docs = [
-                FAISSRetriever._to_retrieved(
-                    type('Doc', (), {'page_content': t, 'metadata': {}})(), 0.0
-                )
-                for t in data["texts"]
-            ]
             retriever = HybridRetriever.from_corpus_file(
                 vector_retriever=faiss,
-                corpus_docs=ret_docs,
                 corpus_path=corpus_path,
             )
-            logger.info(f"混合检索就绪 (BM25 + 向量, BM25权重={RETRIEVAL_HYBRID_ENABLED})")
+            logger.info(f"混合检索就绪 (BM25 + 向量, BM25权重={RETRIEVAL_BM25_WEIGHT})")
         else:
             retriever = FAISSRetriever(store)
             logger.info("纯向量检索就绪")
