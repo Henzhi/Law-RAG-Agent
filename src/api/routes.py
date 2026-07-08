@@ -26,11 +26,17 @@ async def health():
     """健康检查"""
     try:
         engine = get_engine()
+        # 获取 doc_count: 如果是 RerankRetriever 则透传底层
+        retriever = engine.retriever
+        if hasattr(retriever, '_base'):
+            doc_count = retriever._base._store.doc_count if hasattr(retriever._base, '_store') else 0
+        else:
+            doc_count = retriever._store.doc_count if hasattr(retriever, '_store') else 0
         return HealthResponse(
             status="ok",
             version="0.1.0",
-            index_ready=engine.retriever.is_ready(),
-            doc_count=engine.retriever._store.doc_count if engine.retriever._store else 0,
+            index_ready=retriever.is_ready(),
+            doc_count=doc_count,
             llm_model=engine.llm.model_name,
         )
     except Exception as e:
