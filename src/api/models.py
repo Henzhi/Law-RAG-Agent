@@ -17,12 +17,14 @@ class ChatResponse(BaseModel):
     query: str
     answer: str
     sources: list[dict] = Field(default_factory=list)
+    is_casual: bool = False
 
     @classmethod
-    def from_rag_answer(cls, query: str, answer: str, sources: list) -> "ChatResponse":
+    def from_rag_answer(cls, query: str, answer: str, sources: list, is_casual: bool = False) -> "ChatResponse":
         return cls(
             query=query,
             answer=answer,
+            is_casual=is_casual,
             sources=[
                 {
                     "law_name": s.law_name,

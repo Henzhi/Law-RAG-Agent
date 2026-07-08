@@ -95,7 +95,7 @@ async function send() {
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
-    let answer = '', sources = [];
+    let answer = '', sources = [], isCasual = false;
 
     while (true) {
       const { done, value } = await reader.read();
@@ -109,6 +109,7 @@ async function send() {
           const msg = JSON.parse(data);
           if (msg.type === 'meta') {
             sources = msg.sources || [];
+            isCasual = msg.is_casual || false;
           } else if (msg.type === 'token') {
             answer += msg.content;
             bubble.innerHTML = answer.replace(/\n/g, '<br>');
@@ -118,7 +119,8 @@ async function send() {
       }
     }
 
-    if (sources.length) {
+    // 法律查询显示引用来源，闲聊不显示
+    if (sources.length && !isCasual) {
       const srcDiv = document.createElement('div');
       srcDiv.className = 'sources';
       srcDiv.innerHTML = `<div class="src-title">引用条文</div><ul>${sources.map(s => `<li>${s.citation}</li>`).join('')}</ul>`;

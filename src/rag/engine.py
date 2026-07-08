@@ -1,21 +1,61 @@
 """
 RAG 问答引擎。
 
-串联完整管线：查询 → 检索 → 构建 Prompt → LLM 回答
-
-用法:
-    engine = RAGEngine(retriever, llm)
-    answer = engine.ask("行政拘留最长几天？")
-    for token in engine.ask_stream("行政拘留最长几天？"):
-        print(token, end="")
+串联完整管线：查询分类 → 闲聊直回 / 检索 → 构建 Prompt → LLM 回答
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Iterator, Optional
 
 from src.llm.client import LawLLM, Message as LLMMessage
 from .retriever import BaseRetriever, RetrievedDoc
+
+
+# ---------------------------------------------------------------------------
+# 查询分类
+# ---------------------------------------------------------------------------
+
+# 闲聊类关键词/模式 — 匹配后直接走 LLM 回复，跳过检索
+_CASUAL_PATTERNS = [
+    # 问候
+    r'^(你好|您好|hi|hello|嗨|早上好|下午好|晚上好|大家好)',
+    r'^(在吗|在不|在不在)$',
+    # 感谢
+    r'^(谢谢|感谢|多谢|thanks|thank)',
+    # 告别
+    r'^(再见|拜拜|bye|晚安|回头见)',
+    # 自我介绍
+    r'^(你是谁|你叫什么|你是什么|你的名字|介绍.*自己)',
+    r'^(你能做什么|你会什么|你有什么功能|你能干什么)',
+    # 纯闲聊
+    r'^(今天天气|天气怎么样|讲个笑话|说个笑话)',
+    r'^(嗯|哦|好吧|好的|OK|ok)$',
+    # 短问候
+    r'^.{1,4}$',  # 1-4字符的超短消息
+]
+
+CASUAL_SYSTEM_PROMPT = """你是一位友好的法律助手，同时也能进行日常交流。
+
+## 回复原则
+- 问候类：热情简洁地回应，并简要说明你可以帮助解答法律问题
+- 感谢类：礼貌回应，鼓励继续提问
+- 自我介绍：说明你是基于中国法律法规的智能问答助手，可以查询30多部法律
+- 闲聊类：简短回应后，引导用户提出法律问题
+
+请自然友好地回复。"""
+
+
+def is_casual_query(query: str) -> bool:
+    """判断是否为闲聊/问候类查询（无需检索）"""
+    q = query.strip().lower()
+    if not q:
+        return True
+    for pattern in _CASUAL_PATTERNS:
+        if re.match(pattern, q):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -28,9 +68,12 @@ class RAGAnswer:
     query: str
     answer: str
     sources: list[RetrievedDoc] = field(default_factory=list)
+    is_casual: bool = False
 
     def format_sources(self) -> str:
         """格式化引用来源"""
+        if self.is_casual:
+            return "  （闲聊模式，无引用）"
         lines = []
         seen = set()
         for doc in self.sources:
@@ -100,27 +143,25 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     def ask(self, query: str) -> RAGAnswer:
-        """单次问答
+        """单次问答，自动分类：闲聊直回 / 法律RAG"""
 
-        Args:
-            query: 用户问题
+        # 闲聊：跳过检索，直接 LLM 回复
+        if is_casual_query(query):
+            answer = self.llm.chat(query, system_prompt=CASUAL_SYSTEM_PROMPT)
+            return RAGAnswer(query=query, answer=answer, is_casual=True)
 
-        Returns:
-            RAGAnswer: 包含答案和引用来源
-        """
-        # 1. 检索
+        # 法律 RAG
         docs = self.retriever.search(query, top_k=self.top_k)
-
-        # 2. 构建 prompt
         prompt = self._build_prompt(query, docs)
-
-        # 3. 调用 LLM
         answer = self.llm.chat(prompt)
-
         return RAGAnswer(query=query, answer=answer, sources=docs)
 
     def ask_stream(self, query: str) -> Iterator[str]:
-        """流式问答"""
+        """流式问答，自动分类"""
+        if is_casual_query(query):
+            yield from self.llm.chat_stream(query, system_prompt=CASUAL_SYSTEM_PROMPT)
+            return
+
         docs = self.retriever.search(query, top_k=self.top_k)
         prompt = self._build_prompt(query, docs)
         yield from self.llm.chat_stream(prompt)
