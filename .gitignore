@@ -21,7 +21,7 @@ htmlcov/
 .eggs/
 build/
 dist/
-# 本项目虚拟环境（保留 requirements.txt / pyproject.toml 即可）
+# 本项目虚拟环境（uv 管理：保留 pyproject.toml + uv.lock 即可）
 .venv/
 venv/
 env/
