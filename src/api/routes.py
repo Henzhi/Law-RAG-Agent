@@ -134,6 +134,35 @@ async def chat_stream(req: ChatRequest):
     )
 
 
+# ------------------------------------------------------------------
+# 对话持久化
+# ------------------------------------------------------------------
+
+@router.get("/conversations")
+def list_conversations():
+    """列出最近的对话会话"""
+    from .conversation_store import get_conversation_store
+    store = get_conversation_store()
+    return store.list_sessions()
+
+
+@router.get("/conversations/{session_id}")
+def get_conversation(session_id: str):
+    """加载指定会话的对话历史"""
+    from .conversation_store import get_conversation_store
+    store = get_conversation_store()
+    return {"session_id": session_id, "history": store.load_history(session_id)}
+
+
+@router.post("/conversations/{session_id}")
+def save_message(session_id: str, msg: dict):
+    """保存一条消息到会话"""
+    from .conversation_store import get_conversation_store
+    store = get_conversation_store()
+    store.save_message(session_id, msg.get("role", "user"), msg.get("content", ""))
+    return {"ok": True}
+
+
 def _dicts_to_retrieved(docs: list[dict]) -> list:
     """将 agent 返回的 dict 转为 RetrievedDoc 兼容格式"""
     result = []

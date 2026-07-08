@@ -61,7 +61,36 @@ const sendBtn = document.getElementById('send');
 const clearBtn = document.getElementById('clear');
 const topk = document.getElementById('topk');
 let sending = false;
-let conversation = [];  // 对话历史 [{role, content}, ...]
+let conversation = [];
+let sessionId = localStorage.getItem('lawrag_session') || crypto.randomUUID();
+localStorage.setItem('lawrag_session', sessionId);
+
+// 页面加载时恢复上次对话
+(async () => {
+  try {
+    const r = await fetch(`/api/conversations/${sessionId}`);
+    const data = await r.json();
+    if (data.history && data.history.length) {
+      conversation = data.history;
+      for (const m of data.history) {
+        const div = document.createElement('div');
+        div.className = `msg ${m.role}`;
+        div.innerHTML = `<div class="bubble">${m.content.replace(/\n/g, '<br>')}</div>`;
+        chat.appendChild(div);
+      }
+      chat.scrollTop = chat.scrollHeight;
+    }
+  } catch(e) { /* 首次访问，无历史 */ }
+})();
+
+// 保存消息到后端
+function saveMsg(role, content) {
+  fetch(`/api/conversations/${sessionId}`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({role, content}),
+  }).catch(() => {});
+}
 
 query.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -69,6 +98,8 @@ query.addEventListener('keydown', e => {
 sendBtn.addEventListener('click', send);
 clearBtn.addEventListener('click', () => {
   conversation = [];
+  sessionId = crypto.randomUUID();
+  localStorage.setItem('lawrag_session', sessionId);
   chat.innerHTML = '<div class="msg assistant"><div class="bubble">对话已清空。有什么法律问题需要帮助？</div></div>';
 });
 
@@ -133,9 +164,10 @@ async function send() {
 
     if (!answer) { bubble.innerHTML = '抱歉，没有生成回答，请重试。'; }
     else {
-      // 记录本轮对话到历史
       conversation.push({ role: 'user', content: q });
       conversation.push({ role: 'assistant', content: answer });
+      saveMsg('user', q);
+      saveMsg('assistant', answer);
 
       // 法律查询显示引用来源
       if (sources.length && !isCasual) {
