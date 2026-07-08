@@ -33,6 +33,7 @@ dependencies = [
     # ---- 本地 LLM 客户端（支撑需求：C-2、C-3、NF-2）----
     "ollama~=0.4.0",             # 0.4.9 — 对接本地 Ollama 服务
     "jieba>=0.42.1",
+    "torch>=2.5",
     "sentence-transformers>=3.0",
 ]
 
@@ -43,3 +44,12 @@ package = false
 [[tool.uv.index]]
 url = "https://pypi.tuna.tsinghua.edu.cn/simple"
 default = true
+
+# PyTorch CUDA 12.4（用于 GPU 推理，Reranker 需要）
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
