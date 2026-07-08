@@ -10,6 +10,7 @@ class ChatRequest(BaseModel):
     """单次问答请求"""
     query: str = Field(..., min_length=1, max_length=2000, description="用户问题")
     top_k: int = Field(default=5, ge=1, le=20, description="检索条文数")
+    history: list[dict] = Field(default_factory=list, description="多轮对话历史 [{role, content}]")
 
 
 class ChatResponse(BaseModel):

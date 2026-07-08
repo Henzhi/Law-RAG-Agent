@@ -27,6 +27,8 @@
   #send { background: #1a1a2e; color: #fff; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; font-size: 15px; white-space: nowrap; transition: background .2s; }
   #send:hover { background: #16213e; }
   #send:disabled { background: #ccc; cursor: not-allowed; }
+  #clear { background: none; border: 1px solid #ddd; color: #999; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-size: 14px; white-space: nowrap; }
+  #clear:hover { background: #fee; color: #e74c3c; border-color: #e74c3c; }
   .thinking { color: #999; font-style: italic; padding: 10px 0; }
   #topk { width: 60px; padding: 10px 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; text-align: center; outline: none; }
 </style>
@@ -46,6 +48,7 @@
 </div>
 
 <div id="input-area">
+  <button id="clear" title="清空对话">清空</button>
   <input id="topk" type="number" value="5" min="1" max="20" title="检索条文数">
   <textarea id="query" rows="1" placeholder="输入法律问题，按 Enter 发送，Shift+Enter 换行"></textarea>
   <button id="send">发送</button>
@@ -55,13 +58,19 @@
 const chat = document.getElementById('chat');
 const query = document.getElementById('query');
 const sendBtn = document.getElementById('send');
+const clearBtn = document.getElementById('clear');
 const topk = document.getElementById('topk');
 let sending = false;
+let conversation = [];  // 对话历史 [{role, content}, ...]
 
 query.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 sendBtn.addEventListener('click', send);
+clearBtn.addEventListener('click', () => {
+  conversation = [];
+  chat.innerHTML = '<div class="msg assistant"><div class="bubble">对话已清空。有什么法律问题需要帮助？</div></div>';
+});
 
 function addMsg(role, html, sources) {
   const div = document.createElement('div');
@@ -86,11 +95,14 @@ async function send() {
   addMsg('user', q);
   const bubble = addMsg('assistant', '<span class="thinking">检索中...</span>');
 
+  // 只保留最近 10 轮对话，避免上下文过长
+  const recentHistory = conversation.slice(-20);
+
   try {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, top_k: parseInt(topk.value) || 5 }),
+      body: JSON.stringify({ query: q, top_k: parseInt(topk.value) || 5, history: recentHistory }),
     });
 
     const reader = resp.body.getReader();
@@ -119,14 +131,20 @@ async function send() {
       }
     }
 
-    // 法律查询显示引用来源，闲聊不显示
-    if (sources.length && !isCasual) {
-      const srcDiv = document.createElement('div');
-      srcDiv.className = 'sources';
-      srcDiv.innerHTML = `<div class="src-title">引用条文</div><ul>${sources.map(s => `<li>${s.citation}</li>`).join('')}</ul>`;
-      bubble.parentElement.appendChild(srcDiv);
+    if (!answer) { bubble.innerHTML = '抱歉，没有生成回答，请重试。'; }
+    else {
+      // 记录本轮对话到历史
+      conversation.push({ role: 'user', content: q });
+      conversation.push({ role: 'assistant', content: answer });
+
+      // 法律查询显示引用来源
+      if (sources.length && !isCasual) {
+        const srcDiv = document.createElement('div');
+        srcDiv.className = 'sources';
+        srcDiv.innerHTML = `<div class="src-title">引用条文</div><ul>${sources.map(s => `<li>${s.citation}</li>`).join('')}</ul>`;
+        bubble.parentElement.appendChild(srcDiv);
+      }
     }
-    if (!answer) bubble.innerHTML = '抱歉，没有生成回答，请重试。';
 
   } catch (e) {
     bubble.innerHTML = `<span style="color:#e74c3c">请求失败: ${e.message}</span>`;
