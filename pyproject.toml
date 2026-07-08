@@ -22,9 +22,11 @@ dependencies = [
 
     # ---- 向量检索（支撑需求：F-04、NF-1）----
     "faiss-cpu~=1.9.0",          # 1.9.0.post1 — IndexFlatIP + 归一化内积
+    "langchain-community>=0.3.0",  # FAISS 向量库封装
 
     # ---- Embedding（支撑需求：F-03、NF-3）----
-    # 使用 Ollama 原生 nomic-embed-text（通过 ollama Python SDK 调用）
+    # 直接调用 Ollama API（避免 langchain-ollama 版本冲突）
+    # 使用 ollama Python SDK 调用 nomic-embed-text
     # 不再依赖 sentence-transformers，无需 torch/scipy 等大体积 ML 包
 
     # ---- 爬虫（支撑需求：F-01、NF-2、C-1）----
