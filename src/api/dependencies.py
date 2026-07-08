@@ -1,29 +1,26 @@
 """
 API 依赖注入。
 
-管理 LLM、向量库、RAG 引擎等单例，确保只初始化一次。
+管理 LLM、向量库、RAG 引擎等单例，所有可配参数从 src.config 读取。
 """
 from __future__ import annotations
 
-import os
 import logging
-from functools import lru_cache
-from pathlib import Path
 
+from src.config import (
+    LLM_MODEL, LLM_BASE_URL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
+    EMBED_MODEL, EMBED_BASE_URL, EMBED_BATCH_SIZE,
+    RETRIEVAL_TOP_K, RETRIEVAL_HYBRID_ENABLED,
+    INDEX_NAME, INDEX_DIR,
+)
 from src.embedding.embedder import LawEmbedder
 from src.embedding.vector_store import VectorStore
-from src.llm.client import LawLLM
-from src.rag.engine import create_rag_engine, RAGEngine
+from src.llm.client import LawLLM, LLMConfig
+from src.rag.engine import RAGEngine
+from src.rag.retriever import FAISSRetriever
+from src.rag.hybrid_retriever import HybridRetriever
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-VECTOR_STORE_DIR = PROJECT_ROOT / "data" / "vector_store"
-INDEX_NAME = os.getenv("LAW_INDEX_NAME", "law_index")
-LLM_MODEL = os.getenv("LAW_LLM_MODEL", "qwen2.5:7b")
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-TOP_K = int(os.getenv("LAW_TOP_K", "5"))
-
 
 _engine: RAGEngine | None = None
 _llm: LawLLM | None = None
@@ -33,8 +30,16 @@ def get_llm() -> LawLLM:
     """获取 LLM 单例"""
     global _llm
     if _llm is None:
-        logger.info(f"初始化 LLM: {LLM_MODEL} @ {OLLAMA_URL}")
-        _llm = LawLLM(model=LLM_MODEL, base_url=OLLAMA_URL)
+        logger.info(f"初始化 LLM: {LLM_MODEL} @ {LLM_BASE_URL}")
+        _llm = LawLLM(
+            model=LLM_MODEL,
+            base_url=LLM_BASE_URL,
+            config=LLMConfig(
+                temperature=LLM_TEMPERATURE,
+                top_p=LLM_TOP_P,
+                num_predict=LLM_MAX_TOKENS,
+            ),
+        )
     return _llm
 
 
@@ -44,19 +49,52 @@ def get_engine() -> RAGEngine:
     if _engine is None:
         llm = get_llm()
 
-        logger.info(f"加载向量库: {VECTOR_STORE_DIR / INDEX_NAME}")
-        embedder = LawEmbedder(base_url=OLLAMA_URL)
+        logger.info(f"加载向量库: {INDEX_DIR / INDEX_NAME} (模型: {EMBED_MODEL})")
+
+        embedder = LawEmbedder(
+            model=EMBED_MODEL,
+            base_url=EMBED_BASE_URL,
+            batch_size=EMBED_BATCH_SIZE,
+        )
         store = VectorStore(
             embedder=embedder,
-            persist_dir=VECTOR_STORE_DIR,
+            persist_dir=INDEX_DIR,
             index_name=INDEX_NAME,
         )
         if store.load() is None:
             raise RuntimeError(
-                f"FAISS 索引不存在: {VECTOR_STORE_DIR / INDEX_NAME}\n"
+                f"FAISS 索引不存在: {INDEX_DIR / INDEX_NAME}\n"
                 f"请先运行: uv run python scripts/build_index.py build"
             )
 
-        _engine = create_rag_engine(store, llm, top_k=TOP_K)
-        logger.info(f"RAG 引擎就绪 (索引: {store.doc_count} 条)")
+        # 构建检索器（纯向量 / 混合检索，由 .env 控制）
+        from pathlib import Path
+        corpus_path = Path(store.store_dir) / "bm25_corpus.pkl"
+        if RETRIEVAL_HYBRID_ENABLED and corpus_path.exists():
+            # 从缓存加载 BM25 语料
+            faiss = FAISSRetriever(store)
+            # 需要先从 FAISS 获取文档列表来构建 RetrievedDoc 映射
+            # 简化：直接用 FAISS 做纯向量，BM25 语料从缓存加载
+            import pickle
+            with open(corpus_path, "rb") as f:
+                data = pickle.load(f)
+            ret_docs = [
+                FAISSRetriever._to_retrieved(
+                    type('Doc', (), {'page_content': t, 'metadata': {}})(), 0.0
+                )
+                for t in data["texts"]
+            ]
+            retriever = HybridRetriever.from_corpus_file(
+                vector_retriever=faiss,
+                corpus_docs=ret_docs,
+                corpus_path=corpus_path,
+            )
+            logger.info(f"混合检索就绪 (BM25 + 向量, BM25权重={RETRIEVAL_HYBRID_ENABLED})")
+        else:
+            retriever = FAISSRetriever(store)
+            logger.info("纯向量检索就绪")
+
+        _engine = RAGEngine(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K)
+        logger.info(f"RAG 引擎就绪 (索引: {store.doc_count} 条, top_k={RETRIEVAL_TOP_K})")
+
     return _engine
