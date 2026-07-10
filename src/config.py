@@ -50,6 +50,10 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "10"))  # 粗排召回数
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))          # 精排后返回数
 
+# 连续片段扩展：检索后自动拉取相邻 ±N 条条文
+ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "false").lower() == "true"
+ADJACENT_WINDOW = int(os.getenv("ADJACENT_WINDOW", "2"))     # ±N 条
+
 
 # ---------------------------------------------------------------------------
 # 向量索引

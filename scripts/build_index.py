@@ -101,7 +101,7 @@ def cmd_build(args: argparse.Namespace) -> None:
 
     # 4. BM25 语料（混合检索用）
     if RETRIEVAL_HYBRID_ENABLED:
-        print("\n[4/5] 构建 BM25 关键词索引 ...")
+        print("\n[4/6] 构建 BM25 关键词索引 ...")
         from src.rag.hybrid_retriever import HybridRetriever
         from src.rag.retriever import FAISSRetriever
 
@@ -117,10 +117,25 @@ def cmd_build(args: argparse.Namespace) -> None:
         hr.save_corpus(corpus_path)
         print(f"BM25 语料已保存: {corpus_path}")
     else:
-        print("\n[4/5] 跳过 (混合检索未开启)")
+        print("\n[4/6] 跳过 (混合检索未开启)")
 
-    # 5. 完成
-    print(f"\n[5/5] 完成!")
+    # 5. 保存条文映射（连续片段检索用）
+    print("\n[5/6] 保存条文映射 ...")
+    from src.rag.adjacent_expander import AdjacentExpander
+    article_map = AdjacentExpander.build_article_map(all_docs)
+    map_path = Path(store.store_dir) / "article_map.json"
+    AdjacentExpander.save_article_map(article_map, map_path)
+
+    # 6. 保存法律分类索引
+    print("\n[6/6] 保存法律分类索引 ...")
+    law_index = _build_law_index(all_docs)
+    index_path = Path(store.store_dir) / "law_index.json"
+    import json as _json
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(index_path, "w", encoding="utf-8") as f:
+        _json.dump(law_index, f, ensure_ascii=False, indent=2)
+    print(f"  法律分类索引已保存: {index_path} ({len(law_index)} 部法律)")
+
     print("\n" + "=" * 60)
     print(f"  索引名称: {args.index_name or INDEX_NAME}")
     print(f"  文档片段: {store.doc_count}")
@@ -186,6 +201,42 @@ def cmd_search(args: argparse.Namespace) -> None:
         for i, doc in enumerate(results, 1):
             print(f"\n[{i}] 分数: {doc.score:.4f} | {doc.citation}")
             print(f"    内容: {doc.content[:120]}...")
+
+
+# ---------------------------------------------------------------------------
+# 法律分类自动识别
+# ---------------------------------------------------------------------------
+
+_CATEGORY_RULES = [
+    ("刑法", ["刑法", "刑事", "罪名", "量刑", "犯罪", "刑罚"]),
+    ("民法", ["民法", "合同", "物权", "侵权", "婚姻", "继承", "担保", "人格权", "民法典"]),
+    ("行政法", ["行政", "治安", "交通", "许可", "处罚", "复议", "国家赔偿", "公务员"]),
+    ("经济法", ["经济", "商业", "公司", "反垄断", "证券", "银行", "保险", "票据", "企业", "税收", "税务", "消费者", "产品"]),
+    ("社会法", ["劳动", "就业", "社保", "社会", "残疾人", "未成年", "妇女", "老年人"]),
+    ("环境资源法", ["环境", "资源", "生态", "水土", "矿产", "森林", "草原", "海洋", "能源"]),
+    ("宪法与组织法", ["宪法", "立法", "组织", "选举", "代表", "国旗", "国徽", "民族区域"]),
+    ("诉讼法", ["诉讼", "仲裁", "调解", "执行", "复议"]),
+]
+
+def _categorize_law(title: str) -> str:
+    """根据法律名称自动归类"""
+    for category, keywords in _CATEGORY_RULES:
+        for kw in keywords:
+            if kw in title:
+                return category
+    return "其他"
+
+
+def _build_law_index(all_docs: list) -> list[dict]:
+    """生成法律分类索引"""
+    return [
+        {
+            "law_name": doc.title,
+            "category": _categorize_law(doc.title),
+            "article_count": len(doc.articles),
+        }
+        for doc in all_docs
+    ]
 
 
 # ---------------------------------------------------------------------------

@@ -16,7 +16,7 @@ from langgraph.graph.message import add_messages
 
 from src.llm.client import LawLLM, Message as LLMMessage
 from src.rag.retriever import BaseRetriever, RetrievedDoc
-from src.rag.engine import RAG_PROMPT_TEMPLATE, is_casual_query
+from src.rag.engine import RAG_PROMPT_TEMPLATE, is_casual_query, needs_retrieval
 
 logger = logging.getLogger(__name__)
 
@@ -131,8 +131,8 @@ class LawAgentGraph:
         query = state["query"]
         history = state.get("messages", [])
 
-        # 简短查询直接通过，不浪费 LLM 调用
-        if len(query) <= 8 or is_casual_query(query):
+        # 简短查询 + LLM 自省：不需要检索的查询跳过改写
+        if len(query) <= 8 or not needs_retrieval(query, self.llm):
             return {"rewritten_query": query}
 
         # 构建历史文本
@@ -169,21 +169,7 @@ class LawAgentGraph:
         docs = state.get("retrieved_docs", [])
         query = state.get("rewritten_query", state["query"])
 
-        # 构建上下文
-        context_parts = []
-        seen = set()
-        for i, doc in enumerate(docs, 1):
-            key = (doc.get("law_name"), doc.get("article_range"))
-            if key in seen:
-                continue
-            seen.add(key)
-            head = f"### {i}. {doc.get('citation', '')}"
-            content = doc.get("content", "")
-            if "\n" in content and content.startswith("【"):
-                content = content.split("\n", 1)[1]
-            context_parts.append(f"{head}\n{content.strip()}")
-
-        ctx = "\n\n".join(context_parts) if context_parts else "（未找到相关条文）"
+        ctx = _build_hierarchical_context(docs)
         prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query)
 
         # 附加历史
@@ -251,8 +237,8 @@ class LawAgentGraph:
         注意：LangGraph 本身不原生支持逐 token 流式，
         这里先走完 agent 流程拿到最终 answer，再 yield 回去。
         """
-        # 闲聊直接返回
-        if is_casual_query(query):
+        # LLM 自省：不需要检索则直接回答
+        if not needs_retrieval(query, self.llm):
             for token in self.llm.chat_stream(query):
                 yield token
             return
@@ -277,23 +263,46 @@ class LawAgentGraph:
         state_after_retrieve = self._retrieve({"query": q, "rewritten_query": q, "messages": history or []})
         docs = state_after_retrieve.get("retrieved_docs", [])
 
-        # 构建 prompt + 流式输出
-        seen = set()
-        parts = []
-        for i, doc in enumerate(docs, 1):
-            key = (doc.get("law_name"), doc.get("article_range"))
-            if key in seen:
-                continue
-            seen.add(key)
-            head = f"### {i}. {doc.get('citation', '')}"
-            content = doc.get("content", "")
-            if "\n" in content and content.startswith("【"):
-                content = content.split("\n", 1)[1]
-            parts.append(f"{head}\n{content.strip()}")
-
-        ctx = "\n\n".join(parts) if parts else "（未找到相关条文）"
+        ctx = _build_hierarchical_context(docs)
         prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=q)
 
         # 流式输出
         for token in self.llm.chat_stream(prompt):
             yield token
+
+
+# ---------------------------------------------------------------------------
+# 层级上下文构建（engine 和 agent 共用）
+# ---------------------------------------------------------------------------
+
+def _build_hierarchical_context(docs: list[dict]) -> str:
+    """将检索结果按 (法律名, 章) 分组构建层级结构化上下文"""
+    groups: dict[str, dict[str, list]] = {}  # law → chapter → [docs]
+    seen = set()
+    for doc in docs:
+        law = doc.get("law_name", "")
+        article = doc.get("article_range", "")
+        key = (law, article)
+        if key in seen:
+            continue
+        seen.add(key)
+        chapter = doc.get("chapter", "") or "总则"
+        groups.setdefault(law, {}).setdefault(chapter, []).append(doc)
+
+    parts = []
+    idx = 0
+    for law_name, chapters in groups.items():
+        for chapter, ch_docs in chapters.items():
+            section = ch_docs[0].get("section", "") if ch_docs else ""
+            if section:
+                parts.append(f"## 《{law_name}》{chapter} → {section}")
+            else:
+                parts.append(f"## 《{law_name}》{chapter}")
+            for doc in ch_docs:
+                idx += 1
+                content = doc.get("content", "")
+                if "\n" in content and content.startswith("【"):
+                    content = content.split("\n", 1)[1]
+                parts.append(f"### {idx}. {doc.get('article_range', '')}\n{content.strip()}")
+
+    return "\n\n".join(parts) if parts else "（未找到相关条文）"

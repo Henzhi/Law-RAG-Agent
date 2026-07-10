@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
 from .routes import router as api_router
+from .routes import auth_router
 
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 
@@ -43,6 +44,11 @@ app.add_middleware(
 
 # API 路由
 app.include_router(api_router, prefix="/api")
+app.include_router(auth_router, prefix="/api/auth")
+
+# 启动时加载 Token 缓存
+from .auth import load_token_cache
+load_token_cache()
 
 # 静态文件（前端页面）
 if STATIC_DIR.exists():

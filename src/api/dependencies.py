@@ -16,6 +16,7 @@ from src.config import (
     AGENT_ENABLED, AGENT_MAX_RETRIES,
     PG_ENABLED, PG_CONN,
     INDEX_NAME, INDEX_DIR,
+    ADJACENT_ENABLED, ADJACENT_WINDOW,
 )
 from src.embedding.embedder import LawEmbedder
 from src.embedding.vector_store import VectorStore
@@ -47,16 +48,18 @@ def _create_retriever(embedder: LawEmbedder):
     """根据配置创建检索器 (FAISS/pgvector)"""
     from pathlib import Path
 
+    store_dir = INDEX_DIR / INDEX_NAME
+
     if PG_ENABLED:
         logger.info("使用 pgvector 检索")
         retriever = PgvectorRetriever(embedder=embedder, conn_string=PG_CONN)
-        return retriever
+        return _wrap_adjacent(retriever, store_dir)
 
     # FAISS 模式
-    logger.info(f"加载 FAISS: {INDEX_DIR / INDEX_NAME}")
+    logger.info(f"加载 FAISS: {store_dir}")
     store = VectorStore(embedder=embedder, persist_dir=INDEX_DIR, index_name=INDEX_NAME)
     if store.load() is None:
-        raise RuntimeError(f"索引不存在: {INDEX_DIR / INDEX_NAME}\n请先运行: uv run python scripts/build_index.py build")
+        raise RuntimeError(f"索引不存在: {store_dir}\n请先运行: uv run python scripts/build_index.py build")
 
     retriever = FAISSRetriever(store)
 
@@ -74,6 +77,16 @@ def _create_retriever(embedder: LawEmbedder):
         retriever = RerankRetriever(base_retriever=retriever, reranker=reranker, recall_k=RERANK_RECALL_K, top_k=RERANK_TOP_K)
         logger.info(f"Reranker 就绪: 粗排{RERANK_RECALL_K} → 精排{RERANK_TOP_K}")
 
+    return _wrap_adjacent(retriever, store_dir)
+
+
+def _wrap_adjacent(retriever, store_dir):
+    """如果启用，包裹相邻扩展检索器（最外层）"""
+    if ADJACENT_ENABLED:
+        from pathlib import Path
+        from src.rag.adjacent_expander import AdjacentExpander
+        map_path = Path(store_dir) / "article_map.json"
+        retriever = AdjacentExpander(base_retriever=retriever, article_map_path=map_path, window=ADJACENT_WINDOW)
     return retriever
 
 

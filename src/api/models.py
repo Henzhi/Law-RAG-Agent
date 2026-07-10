@@ -11,6 +11,7 @@ class ChatRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=2000, description="用户问题")
     top_k: int = Field(default=5, ge=1, le=20, description="检索条文数")
     history: list[dict] = Field(default_factory=list, description="多轮对话历史 [{role, content}]")
+    session_id: str = Field(default="", description="会话 ID，客户端传入，服务端按用户隔离校验")
 
 
 class ChatResponse(BaseModel):
@@ -46,3 +47,22 @@ class HealthResponse(BaseModel):
     index_ready: bool
     doc_count: int
     llm_model: str
+
+
+class RegisterRequest(BaseModel):
+    """用户注册请求"""
+    username: str = Field(..., min_length=2, max_length=64, description="用户名")
+    password: str = Field(..., min_length=6, max_length=128, description="密码，至少 6 位")
+
+
+class LoginRequest(BaseModel):
+    """用户登录请求"""
+    username: str = Field(..., min_length=1, max_length=64, description="用户名")
+    password: str = Field(..., min_length=1, max_length=128, description="密码")
+
+
+class AuthResponse(BaseModel):
+    """认证响应（注册/登录共用）"""
+    user_id: str
+    token: str
+    username: str

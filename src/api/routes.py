@@ -1,20 +1,22 @@
 """
-API 路由定义。支持多轮对话 + LangGraph Agent。
+API 路由定义。支持多轮对话 + LangGraph Agent + 用户会话隔离。
 """
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
 from .dependencies import get_engine, get_agent
-from .models import ChatRequest, ChatResponse, HealthResponse
+from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse
+from .auth import get_current_user, register_user, login_user
 from src.config import AGENT_ENABLED
 from src.rag.engine import is_casual_query
 from src.llm.client import Message
 
 router = APIRouter()
+auth_router = APIRouter()
 
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
@@ -135,32 +137,58 @@ async def chat_stream(req: ChatRequest):
 
 
 # ------------------------------------------------------------------
-# 对话持久化
+# 对话持久化（全部按 user_id 隔离）
 # ------------------------------------------------------------------
 
 @router.get("/conversations")
-def list_conversations():
-    """列出最近的对话会话"""
+def list_conversations(user_id: str = Depends(get_current_user)):
+    """列出当前用户的对话会话"""
     from .conversation_store import get_conversation_store
     store = get_conversation_store()
-    return store.list_sessions()
+    return store.list_sessions(user_id=user_id)
 
 
 @router.get("/conversations/{session_id}")
-def get_conversation(session_id: str):
-    """加载指定会话的对话历史"""
+def get_conversation(session_id: str, user_id: str = Depends(get_current_user)):
+    """加载指定会话的对话历史（仅限当前用户）"""
     from .conversation_store import get_conversation_store
     store = get_conversation_store()
-    return {"session_id": session_id, "history": store.load_history(session_id)}
+    history = store.load_history(user_id=user_id, session_id=session_id)
+    return {"session_id": session_id, "history": history}
 
 
 @router.post("/conversations/{session_id}")
-def save_message(session_id: str, msg: dict):
-    """保存一条消息到会话"""
+def save_session(session_id: str, body: dict, user_id: str = Depends(get_current_user)):
+    """保存整个会话的 JSON 消息数组（每次整体覆盖，不逐条插入）"""
     from .conversation_store import get_conversation_store
     store = get_conversation_store()
-    store.save_message(session_id, msg.get("role", "user"), msg.get("content", ""))
+    messages = body.get("messages", [])
+    store.save_session(user_id=user_id, session_id=session_id, messages=messages)
     return {"ok": True}
+
+
+# ------------------------------------------------------------------
+# 认证路由
+# ------------------------------------------------------------------
+
+@auth_router.post("/register", response_model=AuthResponse)
+def register(req: RegisterRequest):
+    """注册新用户（需要用户名+密码），返回 Bearer Token"""
+    return register_user(username=req.username, password=req.password)
+
+
+@auth_router.post("/login", response_model=AuthResponse)
+def login(req: LoginRequest):
+    """用用户名+密码登录，返回 Bearer Token"""
+    return login_user(username=req.username, password=req.password)
+
+
+@auth_router.get("/me")
+def get_me(user_id: str = Depends(get_current_user)):
+    """获取当前用户信息"""
+    from .auth import ANONYMOUS_USER_ID
+    is_anonymous = user_id == ANONYMOUS_USER_ID
+    return {"user_id": user_id, "anonymous": is_anonymous}
 
 
 def _dicts_to_retrieved(docs: list[dict]) -> list:

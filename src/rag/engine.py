@@ -32,8 +32,6 @@ _CASUAL_PATTERNS = [
     # 纯闲聊
     r'^(今天天气|天气怎么样|讲个笑话|说个笑话)',
     r'^(嗯|哦|好吧|好的|OK|ok)$',
-    # 短问候
-    r'^.{1,4}$',  # 1-4字符的超短消息
 ]
 
 CASUAL_SYSTEM_PROMPT = """你是一位友好的法律助手，同时也能进行日常交流。
@@ -48,7 +46,7 @@ CASUAL_SYSTEM_PROMPT = """你是一位友好的法律助手，同时也能进行
 
 
 def is_casual_query(query: str) -> bool:
-    """判断是否为闲聊/问候类查询（无需检索）"""
+    """快速正则判断是否为明显的闲聊/问候（用于响应元数据标记）"""
     q = query.strip().lower()
     if not q:
         return True
@@ -56,6 +54,40 @@ def is_casual_query(query: str) -> bool:
         if re.match(pattern, q):
             return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# LLM 自省路由：判断是否需要检索
+# ---------------------------------------------------------------------------
+
+ROUTE_PROMPT = """判断以下用户消息是否需要用法律知识库检索来回答。
+
+## 规则
+- YES: 涉及法律条文、法规、处罚、程序、权利等法律专业知识
+- NO: 问候、感谢、告别、自我介绍、纯闲聊、日常对话
+
+只输出 YES 或 NO，不要解释。
+
+用户消息: {query}"""
+
+
+def needs_retrieval(query: str, llm: LawLLM) -> bool:
+    """LLM 自省：是否需要检索法律知识库？
+
+    先走正则快速预判明显闲聊（零延迟），再走 LLM 路由判断。
+    这样 "正当防卫" 不会被正则误杀，"嗯" 也不浪费 LLM 调用。
+    """
+    # 正则快速预判：100% 确定的闲聊
+    if is_casual_query(query):
+        return False
+
+    # LLM 路由：处理模糊边界
+    prompt = ROUTE_PROMPT.format(query=query)
+    result = llm.chat(
+        prompt,
+        system_prompt="你是一个查询路由判断器。只输出 YES 或 NO。",
+    ).strip().upper()
+    return "YES" in result
 
 
 # ---------------------------------------------------------------------------
@@ -143,10 +175,10 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     def ask(self, query: str) -> RAGAnswer:
-        """单次问答，自动分类：闲聊直回 / 法律RAG"""
+        """单次问答，LLM 自省路由：闲聊直回 / 法律RAG"""
 
-        # 闲聊：跳过检索，直接 LLM 回复
-        if is_casual_query(query):
+        # LLM 自省：是否需要检索？
+        if not needs_retrieval(query, self.llm):
             answer = self.llm.chat(query, system_prompt=CASUAL_SYSTEM_PROMPT)
             return RAGAnswer(query=query, answer=answer, is_casual=True)
 
@@ -157,8 +189,8 @@ class RAGEngine:
         return RAGAnswer(query=query, answer=answer, sources=docs)
 
     def ask_stream(self, query: str) -> Iterator[str]:
-        """流式问答，自动分类"""
-        if is_casual_query(query):
+        """流式问答，LLM 自省路由"""
+        if not needs_retrieval(query, self.llm):
             yield from self.llm.chat_stream(query, system_prompt=CASUAL_SYSTEM_PROMPT)
             return
 
@@ -208,24 +240,35 @@ class RAGEngine:
     # ------------------------------------------------------------------
 
     def _build_prompt(self, query: str, docs: list[RetrievedDoc]) -> str:
-        """将检索结果格式化为 prompt 中的上下文"""
-        context_parts = []
+        """将检索结果格式化为 prompt 中的上下文，按法律+章节分组"""
+        # 按 (法律名, 章) 分组，保留层次结构
+        groups: dict[str, dict[str, list]] = {}  # law_name → chapter → [docs]
         seen = set()
-
-        for i, doc in enumerate(docs, 1):
-            # 去重：同一法条只保留一次
+        for doc in docs:
             key = (doc.law_name, doc.article_range)
             if key in seen:
                 continue
             seen.add(key)
+            chapter = doc.chapter or "总则"
+            groups.setdefault(doc.law_name, {}).setdefault(chapter, []).append(doc)
 
-            # 构建带引用的上下文条目
-            header = f"### {i}. {doc.citation}"
-            # 取 core content（去掉 chapter_summary 的冗余部分）
-            content = self._extract_core(doc)
-            context_parts.append(f"{header}\n{content}")
+        # 构建分组上下文
+        parts = []
+        idx = 0
+        for law_name, chapters in groups.items():
+            for chapter, ch_docs in chapters.items():
+                # 章节头
+                section = ch_docs[0].section if ch_docs and ch_docs[0].section else ""
+                if section:
+                    parts.append(f"## 《{law_name}》{chapter} → {section}")
+                else:
+                    parts.append(f"## 《{law_name}》{chapter}")
+                for doc in ch_docs:
+                    idx += 1
+                    content = self._extract_core(doc)
+                    parts.append(f"### {idx}. {doc.article_range}\n{content}")
 
-        context = "\n\n".join(context_parts) if context_parts else "（未找到相关条文）"
+        context = "\n\n".join(parts) if parts else "（未找到相关条文）"
 
         return self.prompt_template.format(context=context, query=query)
 

@@ -10,6 +10,8 @@
   header { background: #1a1a2e; color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 12px; }
   header h1 { font-size: 18px; font-weight: 600; }
   header .badge { background: #16213e; color: #7ec8e3; padding: 2px 10px; border-radius: 10px; font-size: 12px; }
+  header .user-info { margin-left: auto; font-size: 13px; color: #aaa; cursor: pointer; }
+  header .user-info:hover { color: #7ec8e3; }
   #chat { flex: 1; overflow-y: auto; padding: 20px; max-width: 900px; margin: 0 auto; width: 100%; }
   .msg { margin-bottom: 24px; animation: fadeIn .3s ease; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
@@ -31,14 +33,57 @@
   #clear:hover { background: #fee; color: #e74c3c; border-color: #e74c3c; }
   .thinking { color: #999; font-style: italic; padding: 10px 0; }
   #topk { width: 60px; padding: 10px 8px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; text-align: center; outline: none; }
+
+  /* 登录/注册页面 */
+  #auth-overlay { position: fixed; inset: 0; background: #f0f2f5; display: flex; align-items: center; justify-content: center; z-index: 1000; }
+  #auth-box { background: #fff; padding: 40px 36px; border-radius: 12px; box-shadow: 0 4px 24px rgba(0,0,0,.1); width: 380px; max-width: 90vw; }
+  #auth-box h2 { text-align: center; margin-bottom: 8px; color: #1a1a2e; font-size: 22px; }
+  #auth-box .subtitle { text-align: center; color: #999; font-size: 13px; margin-bottom: 28px; }
+  #auth-box label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; margin-top: 14px; }
+  #auth-box input[type="text"],
+  #auth-box input[type="password"] { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; outline: none; }
+  #auth-box input:focus { border-color: #7ec8e3; box-shadow: 0 0 0 2px rgba(126,200,227,.15); }
+  #auth-box .btn { width: 100%; padding: 11px; border: none; border-radius: 6px; font-size: 15px; cursor: pointer; margin-top: 20px; transition: background .2s; }
+  #auth-box .btn-primary { background: #1a1a2e; color: #fff; }
+  #auth-box .btn-primary:hover { background: #16213e; }
+  #auth-box .btn-secondary { background: none; color: #1a1a2e; border: 1px solid #ddd; margin-top: 10px; }
+  #auth-box .btn-secondary:hover { background: #f5f5f5; }
+  #auth-box .error { color: #e74c3c; font-size: 13px; margin-top: 10px; text-align: center; min-height: 20px; }
+  #auth-box .switch { text-align: center; margin-top: 14px; font-size: 13px; color: #999; }
+  #auth-box .switch a { color: #7ec8e3; cursor: pointer; text-decoration: none; }
+  #auth-box .switch a:hover { text-decoration: underline; }
+
+  /* 退出按钮 */
+  #logout-btn { background: none; border: 1px solid #555; color: #aaa; padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; margin-left: 8px; }
+  #logout-btn:hover { color: #e74c3c; border-color: #e74c3c; }
 </style>
 </head>
 <body>
 
+<!-- 登录/注册覆盖层 -->
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2 id="auth-title">登录</h2>
+    <div class="subtitle">Law-RAG-Agent 法律智能问答</div>
+    <label for="auth-username">用户名</label>
+    <input type="text" id="auth-username" placeholder="请输入用户名" autocomplete="username">
+    <label for="auth-password">密码</label>
+    <input type="password" id="auth-password" placeholder="请输入密码" autocomplete="current-password">
+    <div class="error" id="auth-error"></div>
+    <button class="btn btn-primary" id="auth-submit">登 录</button>
+    <div class="switch" id="auth-switch">
+      没有账号？<a id="switch-link">立即注册</a>
+    </div>
+  </div>
+</div>
+
+<!-- 主界面 -->
 <header>
   <h1>Law-RAG-Agent</h1>
   <span class="badge">Qwen2.5:7B</span>
   <span class="badge">FAISS</span>
+  <span class="user-info" id="user-display"></span>
+  <button id="logout-btn" title="退出登录">退出</button>
 </header>
 
 <div id="chat">
@@ -65,13 +110,122 @@ let conversation = [];
 let sessionId = localStorage.getItem('lawrag_session') || crypto.randomUUID();
 localStorage.setItem('lawrag_session', sessionId);
 
-// 页面加载时恢复上次对话
-(async () => {
+// ─── 认证状态 ───
+let userToken = localStorage.getItem('lawrag_token') || '';
+let currentUsername = localStorage.getItem('lawrag_username') || '';
+const authOverlay = document.getElementById('auth-overlay');
+const authTitle = document.getElementById('auth-title');
+const authUsername = document.getElementById('auth-username');
+const authPassword = document.getElementById('auth-password');
+const authError = document.getElementById('auth-error');
+const authSubmit = document.getElementById('auth-submit');
+const switchLink = document.getElementById('switch-link');
+const userDisplay = document.getElementById('user-display');
+const logoutBtn = document.getElementById('logout-btn');
+
+let authMode = 'login'; // 'login' | 'register'
+
+function authHeaders() {
+  return userToken ? { 'Authorization': 'Bearer ' + userToken } : {};
+}
+
+function showAuth() {
+  authOverlay.style.display = 'flex';
+  authUsername.value = '';
+  authPassword.value = '';
+  authError.textContent = '';
+}
+
+function hideAuth() {
+  authOverlay.style.display = 'none';
+  userDisplay.textContent = currentUsername || '';
+  query.focus();
+}
+
+// 切换登录/注册
+switchLink.addEventListener('click', () => {
+  authMode = authMode === 'login' ? 'register' : 'login';
+  authTitle.textContent = authMode === 'login' ? '登录' : '注册';
+  authSubmit.textContent = authMode === 'login' ? '登 录' : '注 册';
+  switchLink.textContent = authMode === 'login' ? '立即注册' : '返回登录';
+  authError.textContent = '';
+});
+
+// 提交登录/注册
+authSubmit.addEventListener('click', async () => {
+  const username = authUsername.value.trim();
+  const password = authPassword.value;
+  if (!username || !password) {
+    authError.textContent = '请填写用户名和密码';
+    return;
+  }
+  if (password.length < 6) {
+    authError.textContent = '密码至少 6 位';
+    return;
+  }
+
+  authSubmit.disabled = true;
+  authSubmit.textContent = '处理中...';
+
   try {
-    const r = await fetch(`/api/conversations/${sessionId}`);
+    const endpoint = authMode === 'login' ? '/api/auth/login' : '/api/auth/register';
+    const r = await fetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    const data = await r.json();
+
+    if (r.ok) {
+      userToken = data.token;
+      currentUsername = data.username;
+      localStorage.setItem('lawrag_token', userToken);
+      localStorage.setItem('lawrag_username', currentUsername);
+      hideAuth();
+      await loadHistory();
+    } else {
+      authError.textContent = data.detail || '操作失败';
+    }
+  } catch (e) {
+    authError.textContent = '网络错误: ' + e.message;
+  }
+
+  authSubmit.disabled = false;
+  authSubmit.textContent = authMode === 'login' ? '登 录' : '注 册';
+});
+
+// Enter 快捷提交
+authPassword.addEventListener('keydown', e => {
+  if (e.key === 'Enter') authSubmit.click();
+});
+authUsername.addEventListener('keydown', e => {
+  if (e.key === 'Enter') authPassword.focus();
+});
+
+// 退出登录
+logoutBtn.addEventListener('click', () => {
+  userToken = '';
+  currentUsername = '';
+  localStorage.removeItem('lawrag_token');
+  localStorage.removeItem('lawrag_username');
+  sessionId = crypto.randomUUID();
+  localStorage.setItem('lawrag_session', sessionId);
+  conversation = [];
+  chat.innerHTML = '<div class="msg assistant"><div class="bubble">你好！我是法律智能问答助手，基于 30 部中国法律（4000+ 条文）为你提供专业解答。请输入你的法律问题。</div></div>';
+  userDisplay.textContent = '';
+  showAuth();
+});
+
+// 加载历史
+async function loadHistory() {
+  try {
+    const r = await fetch(`/api/conversations/${sessionId}`, { headers: authHeaders() });
+    if (!r.ok) return;
     const data = await r.json();
     if (data.history && data.history.length) {
       conversation = data.history;
+      // 清空并重建聊天记录
+      chat.innerHTML = '';
       for (const m of data.history) {
         const div = document.createElement('div');
         div.className = `msg ${m.role}`;
@@ -80,15 +234,25 @@ localStorage.setItem('lawrag_session', sessionId);
       }
       chat.scrollTop = chat.scrollHeight;
     }
-  } catch(e) { /* 首次访问，无历史 */ }
+  } catch(e) { /* 无历史 */ }
+}
+
+// 页面初始化
+(async () => {
+  if (userToken) {
+    hideAuth();
+    await loadHistory();
+  } else {
+    showAuth();
+  }
 })();
 
-// 保存消息到后端
-function saveMsg(role, content) {
+// 保存整个会话到后端（JSON 整体覆盖，不逐条插入）
+function saveSession() {
   fetch(`/api/conversations/${sessionId}`, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({role, content}),
+    headers: Object.assign({'Content-Type': 'application/json'}, authHeaders()),
+    body: JSON.stringify({messages: conversation}),
   }).catch(() => {});
 }
 
@@ -126,14 +290,13 @@ async function send() {
   addMsg('user', q);
   const bubble = addMsg('assistant', '<span class="thinking">检索中...</span>');
 
-  // 只保留最近 10 轮对话，避免上下文过长
   const recentHistory = conversation.slice(-20);
 
   try {
     const resp = await fetch('/api/chat/stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query: q, top_k: parseInt(topk.value) || 5, history: recentHistory }),
+      headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+      body: JSON.stringify({ query: q, top_k: parseInt(topk.value) || 5, history: recentHistory, session_id: sessionId }),
     });
 
     const reader = resp.body.getReader();
@@ -166,10 +329,8 @@ async function send() {
     else {
       conversation.push({ role: 'user', content: q });
       conversation.push({ role: 'assistant', content: answer });
-      saveMsg('user', q);
-      saveMsg('assistant', answer);
+      saveSession();
 
-      // 法律查询显示引用来源
       if (sources.length && !isCasual) {
         const srcDiv = document.createElement('div');
         srcDiv.className = 'sources';
