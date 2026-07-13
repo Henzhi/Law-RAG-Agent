@@ -76,28 +76,9 @@ async def chat_stream(req: ChatRequest):
         agent = get_agent()
 
         def generate():
-            q = req.query
-            # 查询改写 (agent 内部)
-            state = {"query": q, "messages": req.history, "rewritten_query": "", "retrieved_docs": [], "answer": "", "validation_passed": False, "retry_count": 0}
-            after_rw = agent._rewrite_query(state)
-            rw_q = after_rw.get("rewritten_query", q)
-
-            # 检索
-            after_ret = agent._retrieve({"query": q, "rewritten_query": rw_q, "messages": req.history})
-            docs = after_ret.get("retrieved_docs", [])
-
-            sources = [
-                {"law_name": d.get("law_name", ""), "chapter": d.get("chapter", ""),
-                 "article_range": d.get("article_range", ""), "citation": d.get("citation", ""),
-                 "score": 0.0}
-                for d in docs
-            ]
-            meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False, "rewritten": rw_q}, ensure_ascii=False)
-            yield f"data: {meta}\n\n"
-
-            # 流式输出
-            for token in agent.stream(req.query, history=req.history):
-                chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+            # agent.stream() 现在 yield dict: type ∈ {status, meta, token}
+            for event in agent.stream(req.query, history=req.history):
+                chunk = json.dumps(event, ensure_ascii=False)
                 yield f"data: {chunk}\n\n"
             yield "data: [DONE]\n\n"
     else:

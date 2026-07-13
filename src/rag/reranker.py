@@ -9,9 +9,9 @@ Reranker 二次精排模块。
 from __future__ import annotations
 
 import os
-# 必须在导入 sentence_transformers 之前设置，否则 HuggingFace 会尝试联网
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+# 必须在导入 sentence_transformers 之前强制设为离线，阻止 HuggingFace 联网
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 import logging
 from typing import Optional

@@ -106,7 +106,8 @@ volumes/
 Thumbs.db
 # 本助手内部记忆与工具目录，不入库
 .workbuddy/
-
+.codebuddy/
+temp_skill_extract/
 # ------------------------- 文档编译产物（如有） --------------------------
 *.docx
 ~$*.docx
@@ -114,3 +115,6 @@ Thumbs.db
 
 docs/
 LawData/
+
+# 前端 node_modules 由 .gitignore 上半部分处理
+# frontend/dist/ 由 dist/ 规则覆盖
