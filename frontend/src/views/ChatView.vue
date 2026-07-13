@@ -26,24 +26,29 @@
       </header>
 
       <main class="messages" ref="messagesEl">
-        <div v-if="chat.messages.length === 0" class="welcome">
+        <div v-if="chat.messages.length === 0 && !chat.sending" class="welcome">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="48" height="48"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           <h2>法律智能问答助手</h2>
           <p>基于 30 部中国法律（4000+ 条文）为你提供专业解答</p>
         </div>
-        <ChatMessage v-for="(m, i) in chat.messages" :key="i" :message="m" />
 
-        <!-- DeepSeek 风格思考过程 -->
-        <div v-if="thinkingTraces.length > 0" class="thinking-box">
-          <button class="thinking-toggle" @click="thinkingOpen = !thinkingOpen">
-            <svg :class="{ rotated: thinkingOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="9 18 15 12 9 6"/></svg>
-            <span>{{ thinkingOpen ? '收起思考过程' : '思考过程' }}</span>
-            <span v-if="!answered" class="spinner"></span>
-          </button>
-          <div v-if="thinkingOpen" class="thinking-traces">
-            <div v-for="(t, i) in thinkingTraces" :key="i" class="trace-item">{{ t }}</div>
+        <template v-for="(m, i) in chat.messages" :key="i">
+          <ChatMessage :message="m" />
+          <!-- 思考过程：跟在最后一个用户消息后面、答案前面 -->
+          <div
+            v-if="m.role === 'user' && i === lastUserMsgIndex && (thinkingTraces.length > 0 || (chat.sending && !answered))"
+            class="thinking-box"
+          >
+            <button class="thinking-toggle" @click="thinkingOpen = !thinkingOpen">
+              <svg :class="{ rotated: thinkingOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="9 18 15 12 9 6"/></svg>
+              <span>{{ thinkingOpen ? '收起思考过程' : (answered ? '已思考' : '思考中...') }}</span>
+              <span v-if="!answered && chat.sending" class="spinner"></span>
+            </button>
+            <div v-if="thinkingOpen" class="thinking-traces">
+              <div v-for="(t, i) in thinkingTraces" :key="i" class="trace-item" style="white-space:pre-wrap">{{ t }}</div>
+            </div>
           </div>
-        </div>
+        </template>
       </main>
 
       <ChatInput :disabled="chat.sending" @send="handleSend" @clear="handleNewChat" />
@@ -52,7 +57,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick, watch } from 'vue'
+import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
@@ -70,6 +75,14 @@ const sessions = ref([])
 const thinkingTraces = ref([])
 const thinkingOpen = ref(true)
 const answered = ref(false)
+
+// 找到最后一个 user 消息的索引，思考过程跟在这个消息后面
+const lastUserMsgIndex = computed(() => {
+  for (let i = chat.messages.length - 1; i >= 0; i--) {
+    if (chat.messages[i].role === 'user') return i
+  }
+  return -1
+})
 
 // Redirect if not authenticated
 onMounted(async () => {
@@ -121,12 +134,18 @@ async function handleSend(query, topK) {
     for await (const msg of streamChat(query, recent, chat.sessionId, topK)) {
       if (msg.type === 'thinking') {
         thinkingTraces.value.push(msg.content)
-      } else if (msg.type === 'status') {
-        // agent phase done marker, ignore for now
+      } else if (msg.type === 'clear') {
+        // 校验未通过，清掉上一次的中间答案，重新开始
+        chat.messages = chat.messages.filter(m => m.role !== 'assistant' || chat.messages.indexOf(m) === chat.messages.length - 1 && m.role !== 'assistant')
+        // 更简单：删掉最后一条 assistant 消息
+        while (chat.messages.length > 0 && chat.messages[chat.messages.length - 1].role === 'assistant') {
+          chat.messages.pop()
+        }
+        answer = ''
       } else if (msg.type === 'token') {
         if (!answered.value) {
           answered.value = true
-          // 首个 token 时把思考阶段收起来
+          thinkingOpen.value = false  // 思考结束，折叠
         }
         answer += msg.content
         const last = chat.messages[chat.messages.length - 1]
@@ -219,10 +238,7 @@ function doLogout() {
 }
 /* DeepSeek-style thinking box */
 .thinking-box {
-  max-width: 900px;
-  margin: 8px auto;
-  width: 100%;
-  padding: 0 20px;
+  margin: 4px 0 8px;
 }
 .thinking-toggle {
   display: flex;
