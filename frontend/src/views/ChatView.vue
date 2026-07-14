@@ -174,6 +174,8 @@ async function handleSend(query, topK) {
 async function handleNewChat() {
   chat.newSession()
   chat.messages = []
+  thinkingTraces.value = []
+  answered.value = false
   await refreshSessions()
 }
 
@@ -181,6 +183,8 @@ async function handleSelect(sessionId) {
   chat.sessionId = sessionId
   localStorage.setItem('lawrag_session', sessionId)
   chat.messages = []
+  thinkingTraces.value = []
+  answered.value = false
   await loadCurrentSession()
 }
 
