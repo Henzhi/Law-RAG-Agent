@@ -8,11 +8,6 @@ Reranker 二次精排模块。
 """
 from __future__ import annotations
 
-import os
-# 必须在导入 sentence_transformers 之前强制设为离线，阻止 HuggingFace 联网
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-
 import logging
 from typing import Optional
 
@@ -31,7 +26,8 @@ class Reranker:
     def __init__(self, model_name: str = DEFAULT_RERANK_MODEL):
         self.model_name = model_name
         logger.info(f"加载 Reranker: {model_name} ...")
-        self._model = CrossEncoder(model_name)
+        # local_files_only=True: 只用本地缓存，不联网检查更新
+        self._model = CrossEncoder(model_name, local_files_only=True, device="cpu")
         logger.info("Reranker 就绪")
 
     def rerank(

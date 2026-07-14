@@ -23,6 +23,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - PG_CONN=postgresql://lawrag:lawrag123@db:5432/lawrag
       - PG_HOST=db
       - PG_PORT=5432
       - PG_DATABASE=lawrag

@@ -13,8 +13,23 @@ logger = logging.getLogger(__name__)
 
 class ConversationStore:
     def __init__(self, conn_string: str = PG_CONN):
+        self._conn_string = conn_string
         self._conn = psycopg2.connect(conn_string)
         self._create_table()
+
+    def _ensure_connection(self):
+        """检查连接是否存活，断开则自动重连"""
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception:
+            logger.warning("PG 连接已断开，尝试重连...")
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = psycopg2.connect(self._conn_string)
+            logger.info("PG 重连成功")
 
     def _create_table(self):
         """建表（兼容旧表结构自动迁移）"""
@@ -77,6 +92,7 @@ class ConversationStore:
 
     def save_session(self, user_id: str, session_id: str, messages: list[dict]):
         """保存/更新整个会话的 JSON 消息数组"""
+        self._ensure_connection()
         messages_json = json.dumps(messages, ensure_ascii=False)
         with self._conn.cursor() as cur:
             cur.execute(
@@ -92,6 +108,7 @@ class ConversationStore:
 
     def load_history(self, user_id: str, session_id: str, limit: int = 50) -> list[dict]:
         """加载会话的完整对话历史"""
+        self._ensure_connection()
         with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT messages FROM conversations WHERE user_id = %s AND session_id = %s",
@@ -105,6 +122,7 @@ class ConversationStore:
 
     def list_sessions(self, user_id: str, limit: int = 20) -> list[dict]:
         """列出当前用户的对话会话"""
+        self._ensure_connection()
         with self._conn.cursor() as cur:
             cur.execute("""
                 SELECT session_id, created_at, updated_at, messages
@@ -130,6 +148,7 @@ class ConversationStore:
         return result
 
     def delete_session(self, user_id: str, session_id: str):
+        self._ensure_connection()
         with self._conn.cursor() as cur:
             cur.execute("DELETE FROM conversations WHERE user_id = %s AND session_id = %s", (user_id, session_id))
         self._conn.commit()

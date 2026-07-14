@@ -144,7 +144,7 @@ class LawLLM(BaseChatModel):
 
     def _init_client(self) -> None:
         host = self._base_url.replace("http://", "").replace("https://", "")
-        self._client = ollama.Client(host=host)
+        self._client = ollama.Client(host=host, timeout=300.0)  # 本地 LLM 冷启动较慢，给 5 分钟
 
     # ------------------------------------------------------------------
     # 简洁 API（直接使用，不依赖 LangChain）

@@ -15,6 +15,13 @@ from dotenv import load_dotenv
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
 
+# 强制离线模式 — 必须在任何 HuggingFace 相关 import 之前设置
+# sentence_transformers 5.x 的某些版本不完全尊重 HF_HUB_OFFLINE，
+# 所以这里同时设三个环境变量 + 后续传给 CrossEncoder 的 local_files_only
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 
 # ---------------------------------------------------------------------------
 # LLM

@@ -30,7 +30,7 @@ class LawEmbedder(Embeddings):
 
     def __init__(
         self,
-        model: str = 'nomic-embed-text',
+        model: str = 'bge-m3',
         base_url: str = 'http://localhost:11434',
         batch_size: int = 32,
         max_retries: int = 3,

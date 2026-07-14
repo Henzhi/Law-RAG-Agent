@@ -66,3 +66,10 @@ class AuthResponse(BaseModel):
     user_id: str
     token: str
     username: str
+
+
+class ErrorResponse(BaseModel):
+    """统一错误响应"""
+    error: str
+    detail: str = ""
+    code: str = "INTERNAL_ERROR"

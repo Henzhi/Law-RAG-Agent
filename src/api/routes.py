@@ -26,6 +26,7 @@ def _dicts_to_messages(history: list[dict]) -> list[Message]:
 @router.get("/health", response_model=HealthResponse)
 async def health():
     try:
+        from src.config import LLM_MODEL
         eng = get_engine() if not AGENT_ENABLED else get_agent()
         if hasattr(eng, "retriever"):
             r = eng.retriever
@@ -39,7 +40,7 @@ async def health():
             status="ok", version="0.1.0",
             index_ready=eng.retriever.is_ready() if hasattr(eng, "retriever") else True,
             doc_count=doc_count,
-            llm_model="qwen2.5:7b",
+            llm_model=LLM_MODEL,
         )
     except Exception as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -47,25 +48,30 @@ async def health():
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    if AGENT_ENABLED:
-        agent = get_agent()
-        result = agent.ask(req.query, history=req.history)
-        return ChatResponse.from_rag_answer(
-            query=result["query"], answer=result["answer"],
-            sources=_dicts_to_retrieved(result.get("retrieved_docs", [])),
-            is_casual=is_casual_query(req.query),
-        )
+    try:
+        if AGENT_ENABLED:
+            agent = get_agent()
+            result = agent.ask(req.query, history=req.history)
+            return ChatResponse.from_rag_answer(
+                query=result["query"], answer=result["answer"],
+                sources=_dicts_to_retrieved(result.get("retrieved_docs", [])),
+                is_casual=is_casual_query(req.query),
+            )
 
-    engine = get_engine()
-    history = _dicts_to_messages(req.history)
-    if is_casual_query(req.query):
-        answer = engine.llm.chat(req.query, history=history)
-        return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
+        engine = get_engine()
+        history = _dicts_to_messages(req.history)
+        if is_casual_query(req.query):
+            answer = engine.llm.chat(req.query, history=history)
+            return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
 
-    docs = engine.retriever.search(req.query, top_k=req.top_k)
-    prompt = engine._build_prompt(req.query, docs)
-    answer = engine.llm.chat(prompt, history=history)
-    return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=docs)
+        docs = engine.retriever.search(req.query, top_k=req.top_k)
+        prompt = engine._build_prompt(req.query, docs)
+        answer = engine.llm.chat(prompt, history=history)
+        return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=docs)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 
 @router.post("/chat/stream")
@@ -76,10 +82,13 @@ async def chat_stream(req: ChatRequest):
         agent = get_agent()
 
         def generate():
-            # agent.stream() 现在 yield dict: type ∈ {status, meta, token}
-            for event in agent.stream(req.query, history=req.history):
-                chunk = json.dumps(event, ensure_ascii=False)
-                yield f"data: {chunk}\n\n"
+            try:
+                for event in agent.stream(req.query, history=req.history):
+                    chunk = json.dumps(event, ensure_ascii=False)
+                    yield f"data: {chunk}\n\n"
+            except Exception as e:
+                err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
+                yield f"data: {err}\n\n"
             yield "data: [DONE]\n\n"
     else:
         engine = get_engine()
@@ -87,27 +96,35 @@ async def chat_stream(req: ChatRequest):
 
         if casual:
             def generate():
-                meta = json.dumps({"type": "meta", "sources": [], "is_casual": True}, ensure_ascii=False)
-                yield f"data: {meta}\n\n"
-                for token in engine.llm.chat_stream(req.query, history=history):
-                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                    yield f"data: {chunk}\n\n"
+                try:
+                    meta = json.dumps({"type": "meta", "sources": [], "is_casual": True}, ensure_ascii=False)
+                    yield f"data: {meta}\n\n"
+                    for token in engine.llm.chat_stream(req.query, history=history):
+                        chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                        yield f"data: {chunk}\n\n"
+                except Exception as e:
+                    err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
+                    yield f"data: {err}\n\n"
                 yield "data: [DONE]\n\n"
         else:
             docs = engine.retriever.search(req.query, top_k=engine.top_k)
             prompt = engine._build_prompt(req.query, docs)
 
             def generate():
-                sources = [
-                    {"law_name": s.law_name, "chapter": s.chapter,
-                     "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
-                    for s in docs
-                ]
-                meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False}, ensure_ascii=False)
-                yield f"data: {meta}\n\n"
-                for token in engine.llm.chat_stream(prompt, history=history):
-                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                    yield f"data: {chunk}\n\n"
+                try:
+                    sources = [
+                        {"law_name": s.law_name, "chapter": s.chapter,
+                         "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
+                        for s in docs
+                    ]
+                    meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False}, ensure_ascii=False)
+                    yield f"data: {meta}\n\n"
+                    for token in engine.llm.chat_stream(prompt, history=history):
+                        chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+                        yield f"data: {chunk}\n\n"
+                except Exception as e:
+                    err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
+                    yield f"data: {err}\n\n"
                 yield "data: [DONE]\n\n"
 
     return StreamingResponse(

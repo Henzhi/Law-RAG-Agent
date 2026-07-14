@@ -5,11 +5,14 @@
 """
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Optional
 
 from langchain_core.documents import Document
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -120,9 +123,27 @@ class PgvectorRetriever(BaseRetriever):
 
         self._embedder = embedder
         self._table = table_name
+        self._conn_string = conn_string
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
         self._create_table()
+
+    def _ensure_connection(self):
+        """检查连接是否存活，断开则自动重连"""
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception:
+            import psycopg2
+            from pgvector.psycopg2 import register_vector
+            logger.warning("PG 连接已断开，尝试重连...")
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = psycopg2.connect(self._conn_string)
+            register_vector(self._conn)
+            logger.info("PG 重连成功")
 
     def _create_table(self):
         dim = self._embedder.get_embedding_dim()
@@ -174,6 +195,7 @@ class PgvectorRetriever(BaseRetriever):
             print(f"  pgvector 写入进度: {min(i + batch_size, total)}/{total}")
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
+        self._ensure_connection()
         vec = self._embedder.embed_query(query)
         with self._conn.cursor() as cur:
             cur.execute(
@@ -200,6 +222,7 @@ class PgvectorRetriever(BaseRetriever):
         return results
 
     def search_by_law(self, query: str, law_name: str, top_k: int = 5) -> list[RetrievedDoc]:
+        self._ensure_connection()
         vec = self._embedder.embed_query(query)
         with self._conn.cursor() as cur:
             cur.execute(
