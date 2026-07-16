@@ -9,7 +9,6 @@ Reranker 二次精排模块。
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from sentence_transformers import CrossEncoder
 

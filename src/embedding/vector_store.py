@@ -72,7 +72,7 @@ class VectorStore:
         if not documents:
             raise ValueError('documents 不能为空')
 
-        print(f'\n开始向量化 {len(documents)} 个文档片段...')
+        logger.info(f'开始向量化 {len(documents)} 个文档片段...')
 
         # 提取文本
         texts = [doc.page_content for doc in documents]
@@ -82,7 +82,7 @@ class VectorStore:
             texts, show_progress=show_progress,
         )
 
-        print('正在构建 FAISS 索引...')
+        logger.info('正在构建 FAISS 索引...')
         metadatas = [doc.metadata for doc in documents]
 
         self._store = FAISS.from_embeddings(
@@ -91,7 +91,7 @@ class VectorStore:
             metadatas=metadatas,
         )
 
-        print(f'FAISS 索引构建完成，共 {self._store.index.ntotal} 条向量')
+        logger.info(f'FAISS 索引构建完成，共 {self._store.index.ntotal} 条向量')
         return self._store
 
     # ------------------------------------------------------------------
@@ -105,7 +105,7 @@ class VectorStore:
 
         self.store_dir.mkdir(parents=True, exist_ok=True)
         self._store.save_local(str(self.store_dir))
-        print(f'向量库已保存至: {self.store_dir}')
+        logger.info(f'向量库已保存至: {self.store_dir}')
         return self.store_dir
 
     def load(self) -> Optional[FAISS]:
@@ -119,13 +119,13 @@ class VectorStore:
             logger.warning(f'索引文件不存在: {index_file}')
             return None
 
-        print(f'正在加载向量库: {self.store_dir} ...')
+        logger.info(f'正在加载向量库: {self.store_dir} ...')
         self._store = FAISS.load_local(
             str(self.store_dir),
             self.embedder,  # LawEmbedder 即 Embeddings 实例
             allow_dangerous_deserialization=True,
         )
-        print(f'加载完成，共 {self._store.index.ntotal} 条向量')
+        logger.info(f'加载完成，共 {self._store.index.ntotal} 条向量')
         return self._store
 
     # ------------------------------------------------------------------

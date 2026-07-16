@@ -8,10 +8,9 @@
 """
 from __future__ import annotations
 
-import math
+import logging
 import pickle
 from pathlib import Path
-from typing import Optional
 
 import jieba
 from rank_bm25 import BM25Okapi
@@ -19,6 +18,7 @@ from rank_bm25 import BM25Okapi
 from src.config import RETRIEVAL_BM25_WEIGHT, RETRIEVAL_HYBRID_ENABLED
 from .retriever import BaseRetriever, RetrievedDoc, FAISSRetriever
 
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 混合检索器
@@ -259,19 +259,19 @@ def create_retriever(
     # 尝试从缓存加载
     corpus_path = Path(vector_store.store_dir) / "bm25_corpus.pkl"
     if corpus_path.exists():
-        print(f"从缓存加载 BM25 语料: {corpus_path}")
+        logger.info(f"从缓存加载 BM25 语料: {corpus_path}")
         return HybridRetriever.from_corpus_file(
             vector_retriever=faiss,
             corpus_docs=ret_docs,
             corpus_path=corpus_path,
         )
 
-    print("构建 BM25 语料 ...")
+    logger.info("构建 BM25 语料 ...")
     hr = HybridRetriever(
         vector_retriever=faiss,
         corpus_texts=texts,
         corpus_docs=ret_docs,
     )
     hr.save_corpus(corpus_path)
-    print(f"BM25 语料已缓存: {corpus_path}")
+    logger.info(f"BM25 语料已缓存: {corpus_path}")
     return hr

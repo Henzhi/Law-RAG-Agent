@@ -18,12 +18,12 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from langchain_core.documents import Document
 
-from .parser import LawDocument, Article, Chapter, Section
+from .parser import LawDocument, Article, Chapter
 
 
 # ---------------------------------------------------------------------------

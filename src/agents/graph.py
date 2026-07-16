@@ -16,7 +16,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 from src.llm.client import LawLLM, Message as LLMMessage
-from src.rag.retriever import BaseRetriever, RetrievedDoc
+from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)

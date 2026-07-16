@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
@@ -14,6 +15,13 @@ from dotenv import load_dotenv
 # 自动加载项目根目录的 .env 文件
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_PROJECT_ROOT / ".env")
+
+# ---- 日志 ----
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
 
 # 强制离线模式 — 必须在任何 HuggingFace 相关 import 之前设置
 # sentence_transformers 5.x 的某些版本不完全尊重 HF_HUB_OFFLINE，

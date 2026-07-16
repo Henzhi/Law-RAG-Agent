@@ -9,10 +9,12 @@
 from __future__ import annotations
 
 import re
-import json
-from dataclasses import dataclass, field, asdict
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -367,9 +369,9 @@ def build_all_documents(data_dir: str | Path) -> list[LawDocument]:
         try:
             doc = parser.parse_file(fp)
             docs.append(doc)
-            print(f'[OK] 解析完成: {doc.title}  (共 {len(doc.articles)} 条)')
+            logger.info(f'解析完成: {doc.title}  (共 {len(doc.articles)} 条)')
         except Exception as e:
-            print(f'[ERR] 解析失败 {fp.name}: {e}')
+            logger.error(f'解析失败 {fp.name}: {e}')
     return docs
 
 

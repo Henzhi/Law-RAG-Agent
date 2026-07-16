@@ -12,10 +12,9 @@ Ollama LLM 客户端。
 """
 from __future__ import annotations
 
-import json
 import time
 import logging
-from typing import Any, Iterator, Optional, Sequence
+from typing import Any, Iterator
 
 import ollama
 from langchain_core.callbacks import CallbackManagerForLLMRun

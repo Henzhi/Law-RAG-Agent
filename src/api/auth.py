@@ -11,7 +11,6 @@ from __future__ import annotations
 import hashlib
 import secrets
 import logging
-from datetime import datetime, timezone
 
 import psycopg2
 from fastapi import Request, HTTPException

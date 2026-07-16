@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 import logging
-from typing import Optional, List
+from typing import List
 
 import ollama
 from langchain_core.embeddings import Embeddings
@@ -120,7 +120,7 @@ class LawEmbedder(Embeddings):
 
             if show_progress:
                 done = min(i + self.batch_size, total)
-                print(f'  Embedding 进度: {done}/{total}')
+                logger.info(f'Embedding 进度: {done}/{total}')
 
         return all_embeddings
 

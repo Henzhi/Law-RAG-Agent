@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 from langchain_core.documents import Document
 
@@ -192,7 +191,7 @@ class PgvectorRetriever(BaseRetriever):
                         ),
                     )
             self._conn.commit()
-            print(f"  pgvector 写入进度: {min(i + batch_size, total)}/{total}")
+            logger.info(f"pgvector 写入进度: {min(i + batch_size, total)}/{total}")
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
         self._ensure_connection()

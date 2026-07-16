@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Iterator, Optional
+from typing import Iterator
 
 from src.llm.client import LawLLM, Message as LLMMessage
 from .retriever import BaseRetriever, RetrievedDoc

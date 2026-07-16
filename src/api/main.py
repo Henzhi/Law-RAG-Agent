@@ -15,6 +15,8 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 
+from uuid import uuid4
+
 from .routes import router as api_router
 from .routes import auth_router
 from .models import ErrorResponse
@@ -54,6 +56,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# request_id 追踪中间件
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    rid = uuid4().hex[:8]
+    request.state.request_id = rid
+    logger.info(f"[{rid}] {request.method} {request.url.path}")
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = rid
+    return response
 
 
 # ------------------------------------------------------------------
@@ -103,9 +116,12 @@ async def general_exception_handler(request: Request, exc: Exception):
 app.include_router(api_router, prefix="/api")
 app.include_router(auth_router, prefix="/api/auth")
 
-# 启动时加载 Token 缓存
+# 启动时加载 Token 缓存（PG 不可用时跳过，不影响测试）
 from .auth import load_token_cache
-load_token_cache()
+try:
+    load_token_cache()
+except Exception:
+    logger.warning("Token 缓存加载失败（PG 未启动？），认证功能可能受限")
 
 # 静态文件（前端页面）
 if STATIC_DIR.exists():
