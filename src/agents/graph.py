@@ -2,9 +2,10 @@
 LangGraph 多 Agent 工作流。
 
 流程:
-    用户查询 → 查询改写 → 检索 → 生成回答 → 答案校验
-                                      ↑              │
-                                      └── 不通过 ────┘
+    意图识别 → 闲聊? → 直接回复
+              → 法律? → 查询改写 → 检索 → 生成回答 → 答案校验
+                                                  ↑              │
+                                                  └── 不通过 ────┘
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from langgraph.graph.message import add_messages
 
 from src.llm.client import LawLLM, Message as LLMMessage
 from src.rag.retriever import BaseRetriever, RetrievedDoc
-from src.rag.engine import RAG_PROMPT_TEMPLATE, is_casual_query, needs_retrieval
+from src.rag.engine import RAG_PROMPT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,7 @@ class AgentState(TypedDict):
     answer: str                     # 生成的回答
     validation_passed: bool         # 校验是否通过
     retry_count: int                # 重试次数
+    is_legal_query: bool            # 意图识别：是否法律问题
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +116,94 @@ FAIL
 """
 
 
+
+# ---------------------------------------------------------------------------
+# 意图识别
+# ---------------------------------------------------------------------------
+
+# 闲聊短语 — 精确匹配即跳过检索
+_CASUAL_PHRASES = {
+    # 问候
+    "你好", "您好", "hi", "hello", "嗨", "哈喽",
+    "早上好", "下午好", "晚上好", "中午好", "晚安", "早",
+    "你是谁", "你叫什么", "你是什么", "你的名字",
+    "介绍自己", "自我介绍", "你是啥",
+    "在吗", "在不在", "在线吗",
+    "你能做什么", "你会什么", "你有什么功能",
+    "开始", "开始咨询", "测试", "test", "试试",
+    # 感谢
+    "谢谢", "感谢", "多谢", "thanks", "thank you",
+    "非常感谢", "十分感谢", "万分感谢",
+    # 告别
+    "再见", "拜拜", "bye", "goodbye", "走了", "告辞",
+}
+
+# 法律关键词 — 包含任一即走检索
+_LEGAL_KEYWORDS = [
+    # 法律概念
+    "法律", "法条", "法规", "条文", "条款", "规定（法律",
+    # 处罚
+    "处罚", "罚款", "拘留", "判刑", "刑期", "有期徒刑",
+    "无期徒刑", "死刑", "拘役", "管制", "没收", "吊销",
+    # 责任赔偿
+    "赔偿", "责任", "侵权", "违约", "损害", "损失",
+    # 权利
+    "权利", "义务", "隐私", "名誉", "肖像", "人身",
+    # 法律关系
+    "合同", "协议", "婚姻", "离婚", "继承", "遗嘱",
+    "收养", "抚养", "赡养", "劳动", "社保", "工伤",
+    # 诉讼
+    "诉讼", "仲裁", "起诉", "上诉", "判决", "裁定", "执行",
+    "证据", "时效", "管辖", "法院",
+    # 犯罪
+    "犯罪", "罪名", "故意", "过失", "自首", "累犯",
+    "盗窃", "诈骗", "抢劫", "伤害", "杀人",
+    # 法律名称简称
+    "民法典", "刑法", "宪法", "公司法", "劳动法",
+    "治安管理", "道路交通", "行政法", "刑事法",
+    # 法律问句模式
+    "怎么罚", "判多久", "合法吗", "违法吗", "要不要赔",
+    "能告吗", "算不算", "有没有责任",
+]
+
+
+def _normalize(text: str) -> str:
+    """标准化：去标点、去空格、小写"""
+    import re
+    return re.sub(r'[^\w\u4e00-\u9fff]', '', text.lower().strip())
+
+
+def classify_intent(query: str) -> bool:
+    """意图识别：是否为法律相关问题？
+
+    1. 标准化后精确匹配闲聊短语 → 闲聊
+    2. 标准化后包含法律关键词 → 法律
+    3. 短查询（≤4字）精确匹配闲聊 → 闲聊（二次检查）
+    4. 都不匹配 → 默认检索（宁可多检）
+    """
+    q = query.strip()
+    nq = _normalize(q)
+
+    # 1. 精确匹配闲聊短语
+    for phrase in _CASUAL_PHRASES:
+        if _normalize(phrase) == nq:
+            return False
+
+    # 2. 包含法律关键词
+    for kw in _LEGAL_KEYWORDS:
+        if _normalize(kw) in nq:
+            return True
+
+    # 3. 短查询二次检查：包含闲聊短语
+    if len(nq) <= 4:
+        for phrase in _CASUAL_PHRASES:
+            if _normalize(phrase) in nq:
+                return False
+
+    # 4. 默认走检索
+    return True
+
+
 # ---------------------------------------------------------------------------
 # 消息工具（兼容 dict 和 LangChain message 对象）
 # ---------------------------------------------------------------------------
@@ -170,12 +260,21 @@ class LawAgentGraph:
     def _build_graph(self) -> StateGraph:
         builder = StateGraph(AgentState)
 
+        builder.add_node("intent", self._classify_intent)
+        builder.add_node("casual_reply", self._casual_reply)
         builder.add_node("rewrite", self._rewrite_query)
         builder.add_node("retrieve", self._retrieve)
         builder.add_node("generate", self._generate)
         builder.add_node("validate", self._validate)
 
-        builder.set_entry_point("rewrite")
+        builder.set_entry_point("intent")
+        # 意图 → 闲聊 / 法律
+        builder.add_conditional_edges(
+            "intent", self._route_by_intent,
+            {"legal": "rewrite", "casual": "casual_reply"},
+        )
+        builder.add_edge("casual_reply", END)
+        # 法律路径
         builder.add_edge("rewrite", "retrieve")
         builder.add_edge("retrieve", "generate")
         builder.add_conditional_edges(
@@ -191,13 +290,25 @@ class LawAgentGraph:
     # 节点实现
     # ------------------------------------------------------------------
 
+    def _classify_intent(self, state: AgentState) -> dict:
+        """意图识别节点：判断是闲聊还是法律问题"""
+        is_legal = classify_intent(state["query"])
+        logger.info(f"意图识别: '{state['query']}' → {'法律' if is_legal else '闲聊'}")
+        return {"is_legal_query": is_legal}
+
+    def _route_by_intent(self, state: AgentState) -> str:
+        """根据意图路由到不同分支"""
+        return "legal" if state.get("is_legal_query", True) else "casual"
+
+    def _casual_reply(self, state: AgentState) -> dict:
+        """闲聊直接回复，不走检索"""
+        from src.rag.engine import CASUAL_SYSTEM_PROMPT
+        answer = self.llm.chat(state["query"], system_prompt=CASUAL_SYSTEM_PROMPT)
+        return {"answer": answer, "validation_passed": True}
+
     def _rewrite_query(self, state: AgentState) -> dict:
         query = state["query"]
         history = state.get("messages", [])
-
-        # 简短查询 + LLM 自省：不需要检索的查询跳过改写
-        if len(query) <= 8 or not needs_retrieval(query, self.llm):
-            return {"rewritten_query": query}
 
         # 构建历史文本
         hist_text = ""
@@ -298,6 +409,7 @@ class LawAgentGraph:
             "answer": "",
             "validation_passed": False,
             "retry_count": 0,
+            "is_legal_query": True,
         }
         result = self._graph.invoke(initial)
         return result
@@ -306,7 +418,11 @@ class LawAgentGraph:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
         yield {"type": "thinking", "content": "🔧 正在初始化 Agent..."}
 
-        if not needs_retrieval(query, self.llm):
+        # 1. 意图识别
+        is_legal = classify_intent(query)
+        yield {"type": "thinking", "content": f"🎯 意图识别: {'法律问题 → 检索法条' if is_legal else '闲聊 → 直接回复'}"}
+
+        if not is_legal:
             yield {"type": "thinking", "content": "📝 直接回复，无需检索"}
             for token in self.llm.chat_stream(query):
                 yield {"type": "token", "content": token}
@@ -316,7 +432,7 @@ class LawAgentGraph:
         state = {
             "query": query, "messages": history or [], "rewritten_query": "",
             "retrieved_docs": [], "answer": "", "validation_passed": False,
-            "retry_count": 0, "validation_feedback": "",
+            "retry_count": 0, "validation_feedback": "", "is_legal_query": True,
         }
 
         for attempt in range(self.max_retries + 1):

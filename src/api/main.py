@@ -25,7 +25,12 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时预热引擎"""
+    """应用生命周期：启动时预热引擎，强制重建 Agent（避免旧缓存图）"""
+    from src.config import AGENT_ENABLED
+    if AGENT_ENABLED:
+        from .dependencies import get_agent
+        get_agent(force_reload=True)
+        logger.info("Agent 图已重建")
     yield
 
 

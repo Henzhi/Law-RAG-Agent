@@ -101,9 +101,11 @@ def get_engine() -> RAGEngine:
     return _engine
 
 
-def get_agent() -> LawAgentGraph:
+def get_agent(force_reload: bool = False) -> LawAgentGraph:
     """获取 LangGraph 多 Agent 引擎"""
     global _agent
+    if force_reload:
+        _agent = None
     if _agent is None:
         llm = get_llm()
         embedder = LawEmbedder(model=EMBED_MODEL, base_url=EMBED_BASE_URL, batch_size=EMBED_BATCH_SIZE)
