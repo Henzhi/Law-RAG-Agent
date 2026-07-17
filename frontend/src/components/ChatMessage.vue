@@ -1,6 +1,6 @@
 <template>
   <div :class="['msg', message.role]">
-    <!-- 思考过程折叠块（从 message.thinking 持久化数据渲染） -->
+    <!-- 思考过程折叠块 -->
     <div v-if="message.role === 'assistant' && message.thinking?.length" class="thinking-box">
       <button class="thinking-toggle" @click="thinkingCollapsed = !thinkingCollapsed">
         <svg :class="{ rotated: !thinkingCollapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="9 18 15 12 9 6"/></svg>
@@ -11,10 +11,17 @@
       </div>
     </div>
     <div class="bubble" v-html="renderedContent"></div>
+    <!-- 引用条文：可折叠 -->
     <div v-if="sources.length" class="sources">
-      <div class="src-title">引用条文</div>
-      <ul>
-        <li v-for="(s, i) in sources" :key="i">{{ s.citation }}</li>
+      <button class="src-toggle" @click="srcOpen = !srcOpen">
+        <svg :class="{ rotated: srcOpen }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="13" height="13"><polyline points="9 18 15 12 9 6"/></svg>
+        <span>引用条文 · {{ sources.length }} 条</span>
+      </button>
+      <ul v-if="srcOpen" class="src-list">
+        <li v-for="(s, i) in sources" :key="i">
+          <span class="src-name">{{ s.law_name }}</span>
+          <span class="src-citation">{{ s.citation }}</span>
+        </li>
       </ul>
     </div>
   </div>
@@ -30,10 +37,10 @@ const props = defineProps({
 })
 
 const thinkingCollapsed = ref(true)
+const srcOpen = ref(true)
 
 const renderedContent = computed(() => {
   const text = props.message.content || ''
-  // Bold markdown **text**
   return text
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\n/g, '<br>')
@@ -68,22 +75,61 @@ const renderedContent = computed(() => {
 }
 .msg.assistant .bubble :deep(strong) { color: var(--color-primary-dark); }
 .msg.assistant .bubble :deep(p) { margin: 8px 0; }
+
+/* 引用条文 */
 .sources {
   margin-top: 8px;
-  padding: 8px 12px;
   background: var(--color-primary-light);
-  border-radius: 6px;
+  border-left: 3px solid var(--color-primary);
+  border-radius: 0 6px 6px 0;
+  overflow: hidden;
+}
+.src-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: var(--color-primary-dark);
+  font-family: var(--font-body);
+  cursor: pointer;
+  transition: background 150ms ease;
+  text-align: left;
+}
+.src-toggle:hover { background: rgba(124, 58, 237, 0.08); }
+.src-toggle svg {
+  transition: transform 150ms ease;
+  width: 13px; height: 13px;
+  flex-shrink: 0;
+}
+.src-toggle svg.rotated { transform: rotate(90deg); }
+.src-list {
+  padding: 4px 12px 12px 24px;
+  list-style: none;
   font-size: 13px;
   color: var(--color-text-muted);
-  border-left: 3px solid var(--color-primary);
 }
-.src-title { font-weight: 600; color: var(--color-primary-dark); margin-bottom: 4px; }
-.sources li { list-style: none; margin: 2px 0; font-family: var(--font-body); }
+.src-list li {
+  padding: 3px 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  line-height: 1.5;
+}
+.src-name {
+  color: var(--color-primary-dark);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.src-citation {
+  color: var(--color-text-muted);
+}
 
 /* 思考过程折叠块 */
-.thinking-box {
-  margin-bottom: 8px;
-}
+.thinking-box { margin-bottom: 8px; }
 .thinking-toggle {
   display: flex;
   align-items: center;

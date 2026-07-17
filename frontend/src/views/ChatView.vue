@@ -30,10 +30,11 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" width="48" height="48"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           <h2>法律智能问答助手</h2>
           <p>基于 30 部中国法律（4000+ 条文）为你提供专业解答</p>
+          <p class="welcome-disclaimer">⚠️ 本系统回答仅供参考，不构成专业法律意见。涉及具体法律事务，请咨询执业律师。</p>
         </div>
 
         <template v-for="(m, i) in chat.messages" :key="i">
-          <ChatMessage :message="m" />
+          <ChatMessage :message="m" :sources="m.sources || []" />
           <!-- 思考过程：跟在最后一个用户消息后面、答案前面 -->
           <div
             v-if="m.role === 'user' && i === lastUserMsgIndex && chat.sending"
@@ -51,7 +52,7 @@
         </template>
       </main>
 
-      <ChatInput :disabled="chat.sending" @send="handleSend" @clear="handleNewChat" />
+      <ChatInput :disabled="chat.sending" @send="handleSend" />
     </div>
   </div>
 </template>
@@ -124,7 +125,7 @@ function scrollBottom() {
   }
 }
 
-async function handleSend(query, topK) {
+async function handleSend(query) {
   chat.sending = true
   answered.value = false
   thinkingTraces.value = []
@@ -137,7 +138,8 @@ async function handleSend(query, topK) {
 
   try {
     let answer = ''
-    for await (const msg of streamChat(query, recent, chat.sessionId, topK)) {
+    let sources = []
+    for await (const msg of streamChat(query, recent, chat.sessionId)) {
       if (msg.type === 'thinking') {
         thinkingTraces.value.push(msg.content)
       } else if (msg.type === 'clear') {
@@ -146,6 +148,8 @@ async function handleSend(query, topK) {
           chat.messages.pop()
         }
         answer = ''
+      } else if (msg.type === 'meta') {
+        if (msg.sources?.length) sources = msg.sources
       } else if (msg.type === 'token') {
         if (!answered.value) {
           answered.value = true
@@ -165,7 +169,7 @@ async function handleSend(query, topK) {
     if (!answer) {
       chat.messages.push({ role: 'assistant', content: '抱歉，没有生成回答，请重试。' })
     } else {
-      chat.messages[chat.messages.length - 1] = { role: 'assistant', content: answer, thinking: [...thinkingTraces.value] }
+      chat.messages[chat.messages.length - 1] = { role: 'assistant', content: answer, thinking: [...thinkingTraces.value], sources }
       saveSession(chat.sessionId, chat.messages).catch(() => {})
       await refreshSessions()
     }
@@ -301,4 +305,13 @@ function doLogout() {
 .welcome svg { color: var(--color-primary); margin-bottom: 16px; opacity: 0.5; }
 .welcome h2 { font-size: 22px; color: var(--color-primary-dark); margin-bottom: 8px; }
 .welcome p { font-size: 14px; }
+.welcome-disclaimer {
+  margin-top: 24px;
+  padding: 8px 16px;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  background: var(--color-primary-light);
+  border-radius: 8px;
+  display: inline-block;
+}
 </style>

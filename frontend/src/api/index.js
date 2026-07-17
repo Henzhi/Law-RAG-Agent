@@ -31,11 +31,11 @@ export const saveSession = (sessionId, messages) =>
   fetch(`${BASE}/conversations/${sessionId}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ messages }) }).then(r => { if (!r.ok) throw new Error('会话保存失败') })
 
 // Chat Stream
-export async function* streamChat(query, history, sessionId, topK = 5) {
+export async function* streamChat(query, history, sessionId) {
   const resp = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ query, history, session_id: sessionId, top_k: topK }),
+    body: JSON.stringify({ query, history, session_id: sessionId }),
   })
   if (!resp.ok) throw new Error(`请求失败: ${resp.status}`)
 

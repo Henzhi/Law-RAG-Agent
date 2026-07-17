@@ -7,9 +7,10 @@
 | 层次 | 技术 |
 |------|------|
 | 后端框架 | Python 3.12+ / FastAPI / LangChain |
-| 向量检索 | FAISS + Ollama nomic-embed-text |
+| 向量检索 | FAISS + Ollama bge-m3 |
 | LLM | Ollama (Qwen2.5:7B) |
 | 依赖管理 | uv |
+| 前端 | Vue 3 + Vite |
 
 ## 项目结构
 
@@ -52,7 +53,7 @@ uv sync
 
 # 安装 Ollama 并拉取模型
 ollama pull qwen2.5:7b
-ollama pull nomic-embed-text
+ollama pull bge-m3
 ```
 
 ### 2. 构建向量索引
@@ -135,3 +136,15 @@ uv run python scripts/test_rag.py test
 ## 数据
 
 `LawData/` 目录包含 30 部中国法律原文，共 4145 条条文，涵盖民法、刑法、行政法、经济法等多个领域。
+
+### 数据来源
+
+法律原文通过开源爬虫项目采集：
+
+- **项目地址**：[hjhhoni/pkulaw](https://github.com/hjhhoni/pkulaw)
+- **采集方式**：运行该项目爬虫脚本从公开法律数据库中抓取法律全文，输出为 txt 格式存放于 `LawData/` 目录
+- **数据范围**：覆盖 30 部现行中国法律，如需扩展可重新运行爬虫并重建索引
+
+### 免责声明
+
+本系统回答基于现行法律法规整理，仅供参考，不构成专业法律意见。涉及具体法律事务，请咨询执业律师。
