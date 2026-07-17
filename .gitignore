@@ -116,5 +116,9 @@ temp_skill_extract/
 docs/
 LawData/
 
+# ------------------------- 前端构建产物 -------------------------------------
+# Vite 构建输出到 ../static/，由 npm run build 生成，可重建
+static/
+
 # 前端 node_modules 由 .gitignore 上半部分处理
 # frontend/dist/ 由 dist/ 规则覆盖
