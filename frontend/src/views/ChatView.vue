@@ -36,7 +36,7 @@
           <ChatMessage :message="m" />
           <!-- 思考过程：跟在最后一个用户消息后面、答案前面 -->
           <div
-            v-if="m.role === 'user' && i === lastUserMsgIndex && (thinkingTraces.length > 0 || (chat.sending && !answered))"
+            v-if="m.role === 'user' && i === lastUserMsgIndex && chat.sending"
             class="thinking-box"
           >
             <button class="thinking-toggle" @click="thinkingOpen = !thinkingOpen">
@@ -106,6 +106,12 @@ async function loadCurrentSession() {
     const data = await loadHistory(chat.sessionId)
     if (data.history?.length) {
       chat.messages = data.history
+      // 从最后一条 assistant 消息中恢复 thinkingTraces
+      const lastMsg = chat.messages[chat.messages.length - 1]
+      if (lastMsg?.role === 'assistant' && lastMsg.thinking?.length) {
+        thinkingTraces.value = [...lastMsg.thinking]
+      }
+      answered.value = true
       await nextTick()
       scrollBottom()
     }
@@ -135,9 +141,7 @@ async function handleSend(query, topK) {
       if (msg.type === 'thinking') {
         thinkingTraces.value.push(msg.content)
       } else if (msg.type === 'clear') {
-        // 校验未通过，清掉上一次的中间答案，重新开始
-        chat.messages = chat.messages.filter(m => m.role !== 'assistant' || chat.messages.indexOf(m) === chat.messages.length - 1 && m.role !== 'assistant')
-        // 更简单：删掉最后一条 assistant 消息
+        // 校验未通过，清掉最后一条 assistant 消息重新生成
         while (chat.messages.length > 0 && chat.messages[chat.messages.length - 1].role === 'assistant') {
           chat.messages.pop()
         }
@@ -161,8 +165,8 @@ async function handleSend(query, topK) {
     if (!answer) {
       chat.messages.push({ role: 'assistant', content: '抱歉，没有生成回答，请重试。' })
     } else {
-      chat.messages[chat.messages.length - 1] = { role: 'assistant', content: answer }
-      saveSession(chat.sessionId, chat.messages)
+      chat.messages[chat.messages.length - 1] = { role: 'assistant', content: answer, thinking: [...thinkingTraces.value] }
+      saveSession(chat.sessionId, chat.messages).catch(() => {})
       await refreshSessions()
     }
   } catch (e) {

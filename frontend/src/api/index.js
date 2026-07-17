@@ -28,7 +28,7 @@ export const loadHistory = (sessionId) =>
   fetch(`${BASE}/conversations/${sessionId}`, { headers: authHeaders() }).then(handleError)
 
 export const saveSession = (sessionId, messages) =>
-  fetch(`${BASE}/conversations/${sessionId}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ messages }) })
+  fetch(`${BASE}/conversations/${sessionId}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ messages }) }).then(r => { if (!r.ok) throw new Error('会话保存失败') })
 
 // Chat Stream
 export async function* streamChat(query, history, sessionId, topK = 5) {

@@ -1,5 +1,15 @@
 <template>
   <div :class="['msg', message.role]">
+    <!-- 思考过程折叠块（从 message.thinking 持久化数据渲染） -->
+    <div v-if="message.role === 'assistant' && message.thinking?.length" class="thinking-box">
+      <button class="thinking-toggle" @click="thinkingCollapsed = !thinkingCollapsed">
+        <svg :class="{ rotated: !thinkingCollapsed }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="9 18 15 12 9 6"/></svg>
+        <span>已思考</span>
+      </button>
+      <div v-if="!thinkingCollapsed" class="thinking-traces">
+        <div v-for="(t, i) in message.thinking" :key="i" class="trace-item">{{ t }}</div>
+      </div>
+    </div>
     <div class="bubble" v-html="renderedContent"></div>
     <div v-if="sources.length" class="sources">
       <div class="src-title">引用条文</div>
@@ -11,13 +21,15 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { ref, computed } from 'vue'
 
 const props = defineProps({
   message: { type: Object, required: true },
   thinking: { type: Boolean, default: false },
   sources: { type: Array, default: () => [] },
 })
+
+const thinkingCollapsed = ref(true)
 
 const renderedContent = computed(() => {
   const text = props.message.content || ''
@@ -67,4 +79,43 @@ const renderedContent = computed(() => {
 }
 .src-title { font-weight: 600; color: var(--color-primary-dark); margin-bottom: 4px; }
 .sources li { list-style: none; margin: 2px 0; font-family: var(--font-body); }
+
+/* 思考过程折叠块 */
+.thinking-box {
+  margin-bottom: 8px;
+}
+.thinking-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-family: var(--font-body);
+  cursor: pointer;
+  padding: 4px 0;
+  transition: color 150ms ease;
+}
+.thinking-toggle:hover { color: var(--color-primary); }
+.thinking-toggle svg {
+  transition: transform 150ms ease;
+  width: 14px; height: 14px;
+}
+.thinking-toggle svg.rotated { transform: rotate(90deg); }
+.thinking-traces {
+  margin-top: 4px;
+  padding: 8px 12px;
+  background: var(--color-primary-light);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 0 6px 6px 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
+}
+.trace-item {
+  padding: 2px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 </style>

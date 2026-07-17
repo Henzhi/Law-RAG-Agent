@@ -25,8 +25,8 @@ class Reranker:
     def __init__(self, model_name: str = DEFAULT_RERANK_MODEL):
         self.model_name = model_name
         logger.info(f"加载 Reranker: {model_name} ...")
-        # local_files_only=True: 只用本地缓存，不联网检查更新
-        self._model = CrossEncoder(model_name, local_files_only=True, device="cpu")
+        # 不传 device → 自动检测 CUDA/CPU
+        self._model = CrossEncoder(model_name, local_files_only=True)
         logger.info("Reranker 就绪")
 
     def rerank(
