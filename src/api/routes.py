@@ -113,6 +113,11 @@ def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 
+def _sse(data: dict) -> str:
+    """将 dict 序列化为 SSE 格式的一行"""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     t_start = time.perf_counter()
@@ -122,13 +127,11 @@ async def chat_stream(req: ChatRequest):
         def generate():
             try:
                 for event in agent.stream(req.query, history=req.history):
-                    chunk = json.dumps(event, ensure_ascii=False)
-                    yield f"data: {chunk}\n\n"
+                    yield _sse(event)
             except Exception as e:
                 elapsed = (time.perf_counter() - t_start) * 1000
                 perf_logger.error(f"[stream] mode=agent error={type(e).__name__} elapsed={elapsed:.0f}ms")
-                err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
-                yield f"data: {err}\n\n"
+                yield _sse({"type": "error", "content": f"处理失败: {str(e)}"})
             elapsed = (time.perf_counter() - t_start) * 1000
             perf_logger.info(f"[stream] mode=agent query_len={len(req.query)} elapsed={elapsed:.0f}ms")
             yield "data: [DONE]\n\n"
@@ -137,61 +140,58 @@ async def chat_stream(req: ChatRequest):
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
-    else:
-        engine = get_engine()
-        history = _dicts_to_messages(req.history)
-        casual = not needs_retrieval(req.query, engine.llm)
-        if casual:
-            def generate():
-                try:
-                    meta = json.dumps({"type": "meta", "sources": [], "is_casual": True}, ensure_ascii=False)
-                    yield f"data: {meta}\n\n"
-                    for token in engine.llm.chat_stream(req.query, history=history):
-                        chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                        yield f"data: {chunk}\n\n"
-                except Exception as e:
-                    elapsed = (time.perf_counter() - t_start) * 1000
-                    perf_logger.error(f"[stream] mode=casual error={type(e).__name__} elapsed={elapsed:.0f}ms")
-                    err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
-                    yield f"data: {err}\n\n"
-                elapsed = (time.perf_counter() - t_start) * 1000
-                perf_logger.info(f"[stream] mode=casual query_len={len(req.query)} elapsed={elapsed:.0f}ms")
-                yield "data: [DONE]\n\n"
-            return StreamingResponse(
-                generate(),
-                media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+
+    # ---- 非 Agent 路径：统一用一个 generate() 发出 thinking 事件 ----
+    engine = get_engine()
+    history = _dicts_to_messages(req.history)
+
+    def generate():
+        try:
+            yield _sse({"type": "thinking", "content": "正在分析问题..."})
+            casual = not needs_retrieval(req.query, engine.llm)
+            yield _sse({"type": "thinking", "content": f"意图识别: {'闲聊 → 直接回复' if casual else '法律问题 → 检索法条'}"})
+
+            if casual:
+                yield _sse({"type": "meta", "sources": [], "is_casual": True})
+                yield _sse({"type": "thinking", "content": "直接回复，无需检索"})
+                for token in engine.llm.chat_stream(req.query, history=history):
+                    yield _sse({"type": "token", "content": token})
+                yield _sse({"type": "thinking", "content": "完成"})
+                return
+
+            t_ret = time.perf_counter()
+            yield _sse({"type": "thinking", "content": "正在检索法律条文..."})
+            docs = engine.retriever.search(req.query, top_k=engine.top_k)
+            ret_ms = (time.perf_counter() - t_ret) * 1000
+            prompt = engine._build_prompt(req.query, docs)
+            top_score = round(docs[0].score, 4) if docs else 0
+            perf_logger.info(
+                f"[stream] mode=rag retrieved={len(docs)} top_score={top_score} ret_ms={ret_ms:.0f}ms"
             )
+            yield _sse({"type": "thinking", "content": f"检索完成，找到 {len(docs)} 条相关条文"})
+            if docs:
+                citations = [f"{d.law_name} {d.article_range}" for d in docs[:5]]
+                yield _sse({"type": "thinking", "content": f"引用: {', '.join(citations)}"})
 
-        t_ret = time.perf_counter()
-        docs = engine.retriever.search(req.query, top_k=engine.top_k)
-        ret_ms = (time.perf_counter() - t_ret) * 1000
-        prompt = engine._build_prompt(req.query, docs)
-        top_score = round(docs[0].score, 4) if docs else 0
-        perf_logger.info(
-            f"[stream] mode=rag retrieved={len(docs)} top_score={top_score} ret_ms={ret_ms:.0f}ms"
-        )
+            sources = [
+                {"law_name": s.law_name, "chapter": s.chapter,
+                 "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
+                for s in docs
+            ]
+            yield _sse({"type": "meta", "sources": sources, "is_casual": False})
+            yield _sse({"type": "thinking", "content": "模型正在生成回答..."})
+            for token in engine.llm.chat_stream(prompt, history=history):
+                yield _sse({"type": "token", "content": token})
 
-        def generate():
-            try:
-                sources = [
-                    {"law_name": s.law_name, "chapter": s.chapter,
-                     "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
-                    for s in docs
-                ]
-                meta = json.dumps({"type": "meta", "sources": sources, "is_casual": False}, ensure_ascii=False)
-                yield f"data: {meta}\n\n"
-                for token in engine.llm.chat_stream(prompt, history=history):
-                    chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
-                    yield f"data: {chunk}\n\n"
-            except Exception as e:
-                elapsed = (time.perf_counter() - t_start) * 1000
-                perf_logger.error(f"[stream] mode=rag error={type(e).__name__} elapsed={elapsed:.0f}ms")
-                err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
-                yield f"data: {err}\n\n"
+        except Exception as e:
             elapsed = (time.perf_counter() - t_start) * 1000
-            perf_logger.info(f"[stream] mode=rag query_len={len(req.query)} elapsed={elapsed:.0f}ms")
-            yield "data: [DONE]\n\n"
+            perf_logger.error(f"[stream] error={type(e).__name__} elapsed={elapsed:.0f}ms")
+            yield _sse({"type": "error", "content": f"处理失败: {str(e)}"})
+
+        elapsed = (time.perf_counter() - t_start) * 1000
+        perf_logger.info(f"[stream] query_len={len(req.query)} elapsed={elapsed:.0f}ms")
+        yield _sse({"type": "thinking", "content": "全部完成"})
+        yield "data: [DONE]\n\n"
 
     return StreamingResponse(
         generate(),

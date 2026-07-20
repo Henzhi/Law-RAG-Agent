@@ -68,7 +68,7 @@ RETRIEVAL_DROP_SUMMARY_CHUNKS = os.getenv("RETRIEVAL_DROP_SUMMARY_CHUNKS", "true
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
 RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "15"))  # 粗排召回数
-RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))          # 精排后返回数
+RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "15"))          # 精排后返回数
 
 # 连续片段扩展：检索后自动拉取相邻 ±N 条条文
 ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "true").lower() == "true"

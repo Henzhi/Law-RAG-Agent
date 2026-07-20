@@ -170,10 +170,11 @@ LawDocument
 
 ```
 用户查询
-  → FAISS 向量检索 (Top 10 候选)
+  → FAISS 向量检索 (Top 15 候选)
   → chunk_type 过滤 (排除 chapter_summary)
+  → 相邻条文扩展 (window=±3, 丰富候选)
   → bge-reranker-v2-m3 精排 (Cross-Encoder)
-  → 返回 Top 5
+  → 返回 Top 15
 ```
 
 ### 5.2 检索配置
@@ -183,8 +184,8 @@ LawDocument
 | 检索模式 | 纯向量 (FAISS) | 评测证明 BM25 混合为负优化 |
 | top_k | 5 | 检索返回条数 |
 | Reranker | bge-reranker-v2-m3 | Cross-Encoder 精排 |
-| recall_k | 10 | 粗排候选数 |
-| 相邻扩展 | window=2 | 返回前后 ±2 条相邻条文 |
+| recall_k | 15 | 粗排候选数 |
+| 相邻扩展 | window=3 | 检索前扩展相邻条文，丰富 Reranker 候选池 |
 
 ### 5.3 Prompt 设计
 

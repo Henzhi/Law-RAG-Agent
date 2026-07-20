@@ -199,11 +199,11 @@ curl -X POST http://localhost:8000/api/chat \
 | `RETRIEVAL_DROP_SUMMARY_CHUNKS` | `true` | 检索时过滤章级摘要噪声（消除 30+ 条无关条文召回） |
 | `RERANK_ENABLED` | `true` | Reranker 精排开关 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Reranker 模型 |
-| `RERANK_RECALL_K` | `10` | 粗排候选数 |
-| `RERANK_TOP_K` | `5` | 精排返回数 |
-| `ADJACENT_ENABLED` | `true` | 相邻条文扩展 |
-| `ADJACENT_WINDOW` | `2` | 扩展窗口 (±N) |
-| `AGENT_ENABLED` | `false` | LangGraph Agent 开关（开启会额外发起改写+校验两次 LLM 调用，延迟上升；默认关以优先保证响应速度） |
+| `RERANK_RECALL_K` | `15` | 粗排候选数 |
+| `RERANK_TOP_K` | `15` | 精排返回数 |
+| `ADJACENT_ENABLED` | `true` | 相邻条文扩展（放在 Reranker 之前丰富候选） |
+| `ADJACENT_WINDOW` | `3` | 扩展窗口 (±N) |
+| `AGENT_ENABLED` | `true` | LangGraph Agent 开关（含查询改写+答案校验+重试，优先保证回答质量） |
 | `INDEX_DIR` | `data/vector_store` | FAISS 索引路径 |
 | `INDEX_NAME` | `law_index_bge` | 索引名称 |
 | `JWT_SECRET` | (必填) | JWT 签名密钥 |
@@ -217,8 +217,8 @@ curl -X POST http://localhost:8000/api/chat \
 
 ```
 用户查询 → FAISS 向量检索 (bge-m3) → chunk_type 过滤
-         → bge-reranker-v2-m3 精排 (Cross-Encoder)
-         → 相邻条文扩展 (window=±2)
+         → 相邻条文扩展 (window=±3)
+         → bge-reranker-v2-m3 精排 (Cross-Encoder, Top 15)
          → Prompt 拼接 → LLM 生成 → 答案
 ```
 

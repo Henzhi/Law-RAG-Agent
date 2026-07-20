@@ -70,14 +70,17 @@ def _create_retriever(embedder: LawEmbedder):
         retriever = HybridRetriever.from_corpus_file(vector_retriever=faiss, corpus_path=corpus_path)
         logger.info("混合检索就绪")
 
-    # Reranker
+    # 相邻扩展（放在 Reranker 之前，给精排更多上下文）
+    retriever = _wrap_adjacent(retriever, store_dir)
+
+    # Reranker 兜底精排，保证前端只收 top_k 条
     if RERANK_ENABLED:
         from src.rag.reranker import Reranker, RerankRetriever
         reranker = Reranker(model_name=RERANK_MODEL)
         retriever = RerankRetriever(base_retriever=retriever, reranker=reranker, recall_k=RERANK_RECALL_K, top_k=RERANK_TOP_K)
         logger.info(f"Reranker 就绪: 粗排{RERANK_RECALL_K} → 精排{RERANK_TOP_K}")
 
-    return _wrap_adjacent(retriever, store_dir)
+    return retriever
 
 
 def _wrap_adjacent(retriever, store_dir):

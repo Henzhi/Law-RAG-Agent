@@ -97,13 +97,13 @@
   │   LLM 将口语化问题改写为标准法律查询 ("打人犯法吗" → "故意伤害罪的构成要件")
   │
   ├─ Step 3: FAISS 向量检索
-  │   bge-m3 1024 维向量 → IndexFlatIP 内积相似度 → 粗排返回 Top 10 候选
+  │   bge-m3 1024 维向量 → IndexFlatIP 内积相似度 → 粗排返回 Top 15 候选
   │
-  ├─ Step 4: 噪声过滤 + 精排
-  │   chunk_type 过滤 (排除 chapter_summary) → bge-reranker-v2-m3 Cross-Encoder → Top 5
+  ├─ Step 4: 相邻条文扩展
+  │   window=±3 扩展候选池 → 丰富上下文 → Reranker 精排
   │
-  └─ Step 5: 上下文扩展
-      相邻条文扩展 (window=±2) → 拼接 Prompt → LLM 生成 → 返回答案 + 引用
+  └─ Step 5: 精排 + 生成
+      bge-reranker-v2-m3 Cross-Encoder → Top 15 → LLM 生成 → 返回答案 + 引用
 ```
 
 **一句话总结**: 五步链路覆盖从意图识别到精确召回的全过程，Reranker + 噪声过滤是质量保证的关键环节。
@@ -174,7 +174,7 @@ BM25 混合检索使原本纯向量能命中的查询反而丢失，典型问题
 |:---|:---|:---|:---|
 | 1. 过滤 | chunk_type = "chapter_summary" 直接跳过 | `getattr(doc, "chunk_type", "")` | 彻底消除 33 条无关条文 |
 | 2. 截断 | 单条 chunk 限制 ≤ 1500 字符 | `content[:1500]` | 保护 Prompt 不被噪声占满 |
-| 3. 精排 | bge-reranker-v2-m3 Cross-Encoder | 粗排 10 候选 → 精排 5 输出 | 自然排出无关 chunk |
+| 3. 精排 | bge-reranker-v2-m3 Cross-Encoder | 粗排 15 → 精排 15 输出 | 自然排出无关 chunk |
 
 **效果对比**: 正当防卫查询从 "5 条中 3 条无关" → "核心法条在前 2 位，章级噪声清零"
 
@@ -385,7 +385,7 @@ BM25 混合检索使原本纯向量能命中的查询反而丢失，典型问题
 | 指标 | 数值 |
 |:---|:---:|
 | 检索 Recall@5 | **73%** |
-| 回答综合评分 | **0.817** |
+| 回答综合评分 | **0.890** |
 | 真实幻觉率 | **0%** |
 | 单元测试通过 | **174** |
 | 标注测试集 | **131 条** |
