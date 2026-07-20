@@ -5,34 +5,19 @@ RAG 问答引擎。
 """
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import Iterator
 
 from src.llm.client import LawLLM, Message as LLMMessage
 from .retriever import BaseRetriever, RetrievedDoc
+from .intent import is_casual_query, needs_retrieval
 
 
 # ---------------------------------------------------------------------------
-# 查询分类
+# 查询分类 / 意图识别
 # ---------------------------------------------------------------------------
-
-# 闲聊类关键词/模式 — 匹配后直接走 LLM 回复，跳过检索
-_CASUAL_PATTERNS = [
-    # 问候
-    r'^(你好|您好|hi|hello|嗨|早上好|下午好|晚上好|大家好)',
-    r'^(在吗|在不|在不在)$',
-    # 感谢
-    r'^(谢谢|感谢|多谢|thanks|thank)',
-    # 告别
-    r'^(再见|拜拜|bye|晚安|回头见)',
-    # 自我介绍
-    r'^(你是谁|你叫什么|你是什么|你的名字|介绍.*自己)',
-    r'^(你能做什么|你会什么|你有什么功能|你能干什么)',
-    # 纯闲聊
-    r'^(今天天气|天气怎么样|讲个笑话|说个笑话)',
-    r'^(嗯|哦|好吧|好的|OK|ok)$',
-]
+# 意图识别相关逻辑（is_casual_query / needs_retrieval / classify_intent）已统一
+# 收敛到 src/rag/intent.py，避免 engine 与 agent 各写一份导致行为不一致。
 
 CASUAL_SYSTEM_PROMPT = """你是一位友好的法律助手，同时也能进行日常交流。
 
@@ -47,56 +32,8 @@ CASUAL_SYSTEM_PROMPT = """你是一位友好的法律助手，同时也能进行
 请自然友好地回复。"""
 
 
-def is_casual_query(query: str) -> bool:
-    """快速正则判断是否为明显的闲聊/问候（用于响应元数据标记）"""
-    q = query.strip().lower()
-    if not q:
-        return True
-    for pattern in _CASUAL_PATTERNS:
-        if re.match(pattern, q):
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
-# LLM 自省路由：判断是否需要检索
-# ---------------------------------------------------------------------------
-
-ROUTE_PROMPT = """判断以下用户消息是否需要用法律知识库检索来回答。
-
-## 规则
-- YES: 涉及法律条文、法规、处罚、程序、权利等法律专业知识
-- NO: 问候、感谢、告别、自我介绍、纯闲聊、日常对话
-
-只输出 YES 或 NO，不要解释。
-
-用户消息: {query}"""
-
-
-def needs_retrieval(query: str, llm: LawLLM) -> bool:
-    """LLM 自省：是否需要检索法律知识库？
-
-    1. 正则命中 → 明确闲聊，不检索
-    2. 问题超过 8 个字 → 大概率法律问题，直接检索（零延迟）
-    3. 短模糊查询 → LLM 自省判断（正则误杀和真实闲聊的中间地带）
-    """
-    if is_casual_query(query):
-        return False
-
-    # 长查询大概率是正经问题，不走 LLM 路由省一次调用
-    if len(query.strip()) > 8:
-        return True
-
-    # 短模糊查询：LLM 判断
-    prompt = ROUTE_PROMPT.format(query=query)
-    result = llm.chat(
-        prompt,
-        system_prompt="你是一个查询路由判断器。只输出 YES 或 NO。",
-    ).strip().upper()
-
-    if "NO" in result:
-        return False
-    return True
+# is_casual_query / needs_retrieval / ROUTE_PROMPT 现由 src.rag.intent 提供
+# （见文件顶部 `from .intent import ...`）。本模块只保留 LLM 调用与 prompt 拼接。
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +70,7 @@ class RAGAnswer:
 RAG_PROMPT_TEMPLATE = """你是一位精通中国法律的专业法律助手。请根据以下提供的法律条文，准确回答用户的问题。
 
 ## 要求
-1. 引用法律名称和条款号
+1. **必须引用法律名称和条文编号**（如：根据《治安管理处罚法》第十条），不可只给结论不引条文
 2. 基于条文内容，不编造
 3. 条文不足时诚实说明
 4. 回答简洁清晰

@@ -196,13 +196,14 @@ curl -X POST http://localhost:8000/api/chat \
 | `RETRIEVAL_TOP_K` | `5` | 检索返回条数 |
 | `RETRIEVAL_HYBRID_ENABLED` | `false` | 混合检索开关（评测为负优化） |
 | `RETRIEVAL_BM25_WEIGHT` | `0.0` | BM25 权重 |
+| `RETRIEVAL_DROP_SUMMARY_CHUNKS` | `true` | 检索时过滤章级摘要噪声（消除 30+ 条无关条文召回） |
 | `RERANK_ENABLED` | `true` | Reranker 精排开关 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Reranker 模型 |
 | `RERANK_RECALL_K` | `10` | 粗排候选数 |
 | `RERANK_TOP_K` | `5` | 精排返回数 |
 | `ADJACENT_ENABLED` | `true` | 相邻条文扩展 |
 | `ADJACENT_WINDOW` | `2` | 扩展窗口 (±N) |
-| `AGENT_ENABLED` | `true` | LangGraph Agent 开关 |
+| `AGENT_ENABLED` | `false` | LangGraph Agent 开关（开启会额外发起改写+校验两次 LLM 调用，延迟上升；默认关以优先保证响应速度） |
 | `INDEX_DIR` | `data/vector_store` | FAISS 索引路径 |
 | `INDEX_NAME` | `law_index_bge` | 索引名称 |
 | `JWT_SECRET` | (必填) | JWT 签名密钥 |
@@ -256,10 +257,10 @@ intent (意图识别)
 
 | 指标 | 数值 |
 |:---|:---:|
-| Recall@5 | **80.00%** |
-| Recall@10 | 84.00% |
-| MRR | 0.6535 |
-| 最优配置 | 纯向量 (FAISS + bge-m3) |
+| Recall@5 | **73.00%** |
+| Recall@10 | 81.00% |
+| MRR | 0.6113 |
+| 最优配置 | 纯向量 (FAISS + bge-m3)，已移除章级摘要噪声 |
 
 详见: `docs/retrieval_eval.md`
 
@@ -267,9 +268,11 @@ intent (意图识别)
 
 | 指标 | 数值 |
 |:---|:---:|
-| 综合评分 | **0.817** |
-| 优秀率 (≥0.8) | 58.8% |
-| 法律名称命中率 | 84.7% |
+| 综合评分 | **0.890** |
+| 优秀率 (≥0.8) | 75.6% |
+| 法律名称命中率 | 95.4% |
+| 法条号命中率 | 77.0% |
+| 检索失败率 | 1.5% |
 | 真实幻觉率 | **0%** |
 
 详见: `docs/answer_quality.md`
@@ -312,7 +315,7 @@ uv run pytest tests/ --ignore=tests/test_api.py -v
 
 ## 知识库
 
-`LawData/` 目录包含 30 部中国法律原文，共 3753 条向量文档。涵盖：
+`LawData/` 目录包含 30 部中国法律原文，共 3449 条纯法条向量文档。涵盖：
 
 刑法、民法典、宪法、行政处罚法、行政复议法、行政强制法、行政许可法、治安管理处罚法、道路交通安全法、食品安全法、环境保护法、劳动法、社会保险法、公司法、证券法、企业破产法、合伙企业法、个人独资企业法、信托法、票据法、专利法、商标法、著作权法、反不正当竞争法、监察法、立法法、公务员法、全国人大组织法、国务院组织法、行政诉讼法
 

@@ -85,13 +85,10 @@ def run_one(query: str, retriever, llm: LawLLM) -> tuple[str, str]:
     # 检索（多召回一些候选，后续过滤）
     docs = retriever.search(query, top_k=max(RETRIEVAL_TOP_K * 2, 10))
 
-    # 过滤章级摘要 + 截断过长内容
+    # 章级摘要噪声已在运行时检索层（FAISSRetriever / PgvectorRetriever）统一过滤，
+    # 此处只做内容截断保护，避免大块吞掉 prompt。
     filtered: list[RetrievedDoc] = []
     for doc in docs:
-        # 跳过章级摘要 chunk（含几十条不相关条文）
-        if getattr(doc, "chunk_type", "") == "chapter_summary":
-            continue
-        # 截断过长内容
         if len(doc.content) > 1500:
             doc.content = doc.content[:1500] + "\n...(内容过长已截断)"
         filtered.append(doc)
@@ -122,9 +119,14 @@ def run_one(query: str, retriever, llm: LawLLM) -> tuple[str, str]:
     prompt = f"""你是一位专业的中国法律助手。请根据以下法律条文，准确回答用户的问题。
 
 ## 要求
-1. 引用法律名称和条款号
+1. **必须引用法律名称和条文编号**（如：根据《刑法》第二百三十四条），不可只给结论不引条文
 2. 基于条文内容，不编造
 3. 回答简洁清晰
+
+## 示例
+用户: 盗窃罪怎么判？
+条文: 《刑法》第二百六十四条: 盗窃公私财物，数额较大的，或者多次盗窃、入户盗窃、携带凶器盗窃、扒窃的，处三年以下有期徒刑、拘役或者管制，并处或者单处罚金。
+回答: 根据《刑法》第二百六十四条，盗窃罪的量刑分三档：数额较大（盗窃价值超过一定标准）或多次盗窃等，处三年以下有期徒刑、拘役或者管制。
 
 ## 相关法律条文
 {context}

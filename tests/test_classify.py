@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from src.agents.graph import classify_intent
+from src.rag.intent import classify_intent
 
 
 @pytest.mark.parametrize("query,expected", [
@@ -49,7 +49,7 @@ def test_classify_intent(query, expected):
 
 def test_normalize():
     """测试标准化函数"""
-    from src.agents.graph import _normalize
+    from src.rag.intent import _normalize
     assert _normalize("你好！") == "你好"
     assert _normalize("HI") == "hi"
     assert _normalize("HELLO, World!") == "helloworld"

@@ -11,6 +11,8 @@ from dataclasses import dataclass
 
 from langchain_core.documents import Document
 
+from src.config import RETRIEVAL_DROP_SUMMARY_CHUNKS
+
 logger = logging.getLogger(__name__)
 
 
@@ -74,12 +76,18 @@ class FAISSRetriever(BaseRetriever):
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
         results = self._store.search_with_score(query, k=top_k)
-        return [self._to_retrieved(doc, score) for doc, score in results]
+        docs = [self._to_retrieved(doc, score) for doc, score in results]
+        if RETRIEVAL_DROP_SUMMARY_CHUNKS:
+            docs = [d for d in docs if d.chunk_type != "chapter_summary"]
+        return docs
 
     def search_by_law(self, query: str, law_name: str, top_k: int = 5) -> list[RetrievedDoc]:
         """在指定法律内检索"""
         results = self._store.search_with_score(query, k=top_k, filter_dict={"law_name": law_name})
-        return [self._to_retrieved(doc, score) for doc, score in results]
+        docs = [self._to_retrieved(doc, score) for doc, score in results]
+        if RETRIEVAL_DROP_SUMMARY_CHUNKS:
+            docs = [d for d in docs if d.chunk_type != "chapter_summary"]
+        return docs
 
     def is_ready(self) -> bool:
         return self._store.store is not None and self._store.doc_count > 0
@@ -196,11 +204,12 @@ class PgvectorRetriever(BaseRetriever):
     def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
         self._ensure_connection()
         vec = self._embedder.embed_query(query)
+        where = "WHERE chunk_type <> 'chapter_summary' " if RETRIEVAL_DROP_SUMMARY_CHUNKS else ""
         with self._conn.cursor() as cur:
             cur.execute(
                 f"SELECT content,law_name,chapter,section,article_range,chunk_type,"
                 f"1 - (embedding <=> %s::vector) AS score "
-                f"FROM {self._table} "
+                f"FROM {self._table} {where}"
                 f"ORDER BY embedding <=> %s::vector LIMIT %s",
                 (vec, vec, top_k),
             )
@@ -223,11 +232,12 @@ class PgvectorRetriever(BaseRetriever):
     def search_by_law(self, query: str, law_name: str, top_k: int = 5) -> list[RetrievedDoc]:
         self._ensure_connection()
         vec = self._embedder.embed_query(query)
+        where = "AND chunk_type <> 'chapter_summary' " if RETRIEVAL_DROP_SUMMARY_CHUNKS else ""
         with self._conn.cursor() as cur:
             cur.execute(
                 f"SELECT content,law_name,chapter,section,article_range,chunk_type,"
                 f"1 - (embedding <=> %s::vector) AS score "
-                f"FROM {self._table} WHERE law_name = %s "
+                f"FROM {self._table} WHERE law_name = %s {where}"
                 f"ORDER BY embedding <=> %s::vector LIMIT %s",
                 (vec, law_name, vec, top_k),
             )

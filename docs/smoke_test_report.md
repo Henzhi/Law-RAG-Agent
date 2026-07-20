@@ -1,7 +1,7 @@
 # 集成联调与冒烟测试报告
 
 **测试时间**: 2026-07-20
-**测试环境**: Windows + Ollama (qwen2.5:7b / bge-m3) + FAISS (3753 条向量)
+**测试环境**: Windows + Ollama (qwen2.5:7b / bge-m3) + FAISS (3449 条纯法条向量，已移除章级摘要噪声)
 **测试框架**: 自研 smoke_test.py (requests + SSE)
 
 ---

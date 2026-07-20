@@ -59,15 +59,20 @@ RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
 RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "false").lower() == "true"
 RETRIEVAL_BM25_WEIGHT = float(os.getenv("RETRIEVAL_BM25_WEIGHT", "0.0"))
 
-# Reranker 二次精排 (CPU 较慢，建议有 GPU 再开启)
-RERANK_ENABLED = os.getenv("RERANK_ENABLED", "false").lower() == "true"
+# 检索时是否过滤章级摘要 chunk（噪声大，评测已验证应过滤）
+# 在检索层统一拦截，避免运行时出现 30+ 条无关条文被召回的问题
+RETRIEVAL_DROP_SUMMARY_CHUNKS = os.getenv("RETRIEVAL_DROP_SUMMARY_CHUNKS", "true").lower() == "true"
+
+# Reranker 二次精排 (Cross-Encoder)。评测验证可显著提升召回质量、消除噪声；
+# 纯 CPU 推理会增加少量延迟，有 GPU 更佳。默认开启以对齐评测验证过的配置。
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "10"))  # 粗排召回数
+RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "15"))  # 粗排召回数
 RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "5"))          # 精排后返回数
 
 # 连续片段扩展：检索后自动拉取相邻 ±N 条条文
-ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "false").lower() == "true"
-ADJACENT_WINDOW = int(os.getenv("ADJACENT_WINDOW", "2"))     # ±N 条
+ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "true").lower() == "true"
+ADJACENT_WINDOW = int(os.getenv("ADJACENT_WINDOW", "3"))     # ±N 条
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +87,9 @@ INDEX_DIR = _PROJECT_ROOT / os.getenv("INDEX_DIR", "data/vector_store")
 # LangGraph Agent
 # ---------------------------------------------------------------------------
 
+# LangGraph Agent 路径（含查询改写 + 答案校验）。默认关闭：
+# 开启后每条查询会额外发起 rewrite + validate 两次 LLM 调用，延迟显著上升；
+# 追求最高回答质量时可设为 true（需 GPU 或接受慢速）。检索质量与噪声过滤不依赖它。
 AGENT_ENABLED = os.getenv("AGENT_ENABLED", "false").lower() == "true"
 AGENT_MAX_RETRIES = int(os.getenv("AGENT_MAX_RETRIES", "1"))
 

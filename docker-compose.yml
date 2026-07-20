@@ -32,7 +32,9 @@ services:
       - OLLAMA_URL=http://host.docker.internal:11434
       - EMBED_MODEL=${EMBED_MODEL:-bge-m3}
       - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
-      - RERANK_ENABLED=false
+      - RERANK_ENABLED=true
+      - ADJACENT_ENABLED=true
+      - AGENT_ENABLED=false
       - INDEX_NAME=${INDEX_NAME:-law_index}
     depends_on:
       db:
