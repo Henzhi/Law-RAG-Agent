@@ -61,7 +61,8 @@ class HybridRetriever(BaseRetriever):
 
     def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
         """混合检索，按加权分数排序返回"""
-        if not RETRIEVAL_HYBRID_ENABLED:
+        # 如果 BM25 权重为 0，直接走纯向量检索（无融合开销）
+        if self._bm25_weight <= 0:
             return self._vector.search(query, top_k)
 
         # 1. 向量检索（取 top_k * 3 作为候选池给融合用）

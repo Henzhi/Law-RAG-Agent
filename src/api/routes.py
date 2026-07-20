@@ -4,6 +4,8 @@ API 路由定义。支持多轮对话 + LangGraph Agent + 用户会话隔离。
 from __future__ import annotations
 
 import json
+import time
+import logging
 
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
@@ -17,6 +19,7 @@ from src.llm.client import Message
 
 router = APIRouter()
 auth_router = APIRouter()
+perf_logger = logging.getLogger("api.perf")
 
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
@@ -28,17 +31,23 @@ async def health():
     try:
         from src.config import LLM_MODEL
         eng = get_engine() if not AGENT_ENABLED else get_agent()
-        if hasattr(eng, "retriever"):
-            r = eng.retriever
-            if hasattr(r, "_base"):
-                doc_count = r._base._store.doc_count if hasattr(r._base, "_store") else 0
-            else:
-                doc_count = r._store.doc_count if hasattr(r, "_store") else 0
-        else:
-            doc_count = 0
+
+        # 遍历检索器链找到最内层的 FAISS/PG retriever
+        doc_count = 0
+        index_ready = True
+        retriever = getattr(eng, "retriever", None)
+        if retriever:
+            index_ready = retriever.is_ready()
+            # 穿透装饰器链: AdjacentExpander → Reranker → Hybrid → FAISS
+            chain = retriever
+            while hasattr(chain, "_base"):
+                chain = chain._base
+            if hasattr(chain, "_store"):
+                doc_count = getattr(chain._store, "doc_count", 0)
+
         return HealthResponse(
             status="ok", version="0.1.0",
-            index_ready=eng.retriever.is_ready() if hasattr(eng, "retriever") else True,
+            index_ready=index_ready,
             doc_count=doc_count,
             llm_model=LLM_MODEL,
         )
@@ -48,37 +57,66 @@ async def health():
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
+    t_start = time.perf_counter()
     try:
         if AGENT_ENABLED:
-            # Agent 图内部有 intent → casual_reply/rewrite 路由
             agent = get_agent()
             result = agent.ask(req.query, history=req.history)
+            elapsed = (time.perf_counter() - t_start) * 1000
+            ret_docs = result.get("retrieved_docs", [])
+            perf_logger.info(
+                f"[chat] mode=agent query_len={len(req.query)} "
+                f"legal={result.get('is_legal_query', True)} "
+                f"retrieved={len(ret_docs)} elapsed={elapsed:.0f}ms"
+            )
             return ChatResponse.from_rag_answer(
                 query=result["query"], answer=result["answer"],
-                sources=_dicts_to_retrieved(result.get("retrieved_docs", [])),
+                sources=_dicts_to_retrieved(ret_docs),
                 is_casual=not result.get("is_legal_query", True),
             )
 
         engine = get_engine()
         history = _dicts_to_messages(req.history)
+
+        t_route = time.perf_counter()
         if not needs_retrieval(req.query, engine.llm):
             answer = engine.llm.chat(req.query, history=history)
+            elapsed = (time.perf_counter() - t_start) * 1000
+            perf_logger.info(
+                f"[chat] mode=casual query_len={len(req.query)} "
+                f"route_ms={(time.perf_counter()-t_route)*1000:.0f} elapsed={elapsed:.0f}ms"
+            )
             return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=[], is_casual=True)
 
+        t_ret = time.perf_counter()
         docs = engine.retriever.search(req.query, top_k=req.top_k)
+        ret_ms = (time.perf_counter() - t_ret) * 1000
+
+        t_llm = time.perf_counter()
         prompt = engine._build_prompt(req.query, docs)
         answer = engine.llm.chat(prompt, history=history)
+        llm_ms = (time.perf_counter() - t_llm) * 1000
+
+        elapsed = (time.perf_counter() - t_start) * 1000
+        top_score = round(docs[0].score, 4) if docs else 0
+        perf_logger.info(
+            f"[chat] mode=rag query_len={len(req.query)} "
+            f"retrieved={len(docs)} top_score={top_score} "
+            f"ret_ms={ret_ms:.0f} llm_ms={llm_ms:.0f} elapsed={elapsed:.0f}ms"
+        )
         return ChatResponse.from_rag_answer(query=req.query, answer=answer, sources=docs)
     except HTTPException:
         raise
     except Exception as e:
+        elapsed = (time.perf_counter() - t_start) * 1000
+        perf_logger.error(f"[chat] error={type(e).__name__} elapsed={elapsed:.0f}ms")
         raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
 
 
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
+    t_start = time.perf_counter()
     if AGENT_ENABLED:
-        # Agent.stream() 内部有意图识别，自己处理闲聊/法律路由
         agent = get_agent()
 
         def generate():
@@ -87,8 +125,12 @@ async def chat_stream(req: ChatRequest):
                     chunk = json.dumps(event, ensure_ascii=False)
                     yield f"data: {chunk}\n\n"
             except Exception as e:
+                elapsed = (time.perf_counter() - t_start) * 1000
+                perf_logger.error(f"[stream] mode=agent error={type(e).__name__} elapsed={elapsed:.0f}ms")
                 err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
                 yield f"data: {err}\n\n"
+            elapsed = (time.perf_counter() - t_start) * 1000
+            perf_logger.info(f"[stream] mode=agent query_len={len(req.query)} elapsed={elapsed:.0f}ms")
             yield "data: [DONE]\n\n"
         return StreamingResponse(
             generate(),
@@ -108,8 +150,12 @@ async def chat_stream(req: ChatRequest):
                         chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                         yield f"data: {chunk}\n\n"
                 except Exception as e:
+                    elapsed = (time.perf_counter() - t_start) * 1000
+                    perf_logger.error(f"[stream] mode=casual error={type(e).__name__} elapsed={elapsed:.0f}ms")
                     err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
                     yield f"data: {err}\n\n"
+                elapsed = (time.perf_counter() - t_start) * 1000
+                perf_logger.info(f"[stream] mode=casual query_len={len(req.query)} elapsed={elapsed:.0f}ms")
                 yield "data: [DONE]\n\n"
             return StreamingResponse(
                 generate(),
@@ -117,8 +163,14 @@ async def chat_stream(req: ChatRequest):
                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
             )
 
+        t_ret = time.perf_counter()
         docs = engine.retriever.search(req.query, top_k=engine.top_k)
+        ret_ms = (time.perf_counter() - t_ret) * 1000
         prompt = engine._build_prompt(req.query, docs)
+        top_score = round(docs[0].score, 4) if docs else 0
+        perf_logger.info(
+            f"[stream] mode=rag retrieved={len(docs)} top_score={top_score} ret_ms={ret_ms:.0f}ms"
+        )
 
         def generate():
             try:
@@ -133,8 +185,12 @@ async def chat_stream(req: ChatRequest):
                     chunk = json.dumps({"type": "token", "content": token}, ensure_ascii=False)
                     yield f"data: {chunk}\n\n"
             except Exception as e:
+                elapsed = (time.perf_counter() - t_start) * 1000
+                perf_logger.error(f"[stream] mode=rag error={type(e).__name__} elapsed={elapsed:.0f}ms")
                 err = json.dumps({"type": "error", "content": f"处理失败: {str(e)}"}, ensure_ascii=False)
                 yield f"data: {err}\n\n"
+            elapsed = (time.perf_counter() - t_start) * 1000
+            perf_logger.info(f"[stream] mode=rag query_len={len(req.query)} elapsed={elapsed:.0f}ms")
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(
