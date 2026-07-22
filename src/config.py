@@ -63,6 +63,11 @@ RETRIEVAL_BM25_WEIGHT = float(os.getenv("RETRIEVAL_BM25_WEIGHT", "0.0"))
 # 在检索层统一拦截，避免运行时出现 30+ 条无关条文被召回的问题
 RETRIEVAL_DROP_SUMMARY_CHUNKS = os.getenv("RETRIEVAL_DROP_SUMMARY_CHUNKS", "true").lower() == "true"
 
+# 向量相似度召回阈值（bge-m3 归一化内积，范围约 [-1, 1]，0.95≈强相关、<0.4 视为较差）。
+# 仅作为召回质量闸门：向量分数低于阈值的结果被丢弃；若过滤后无候选则回退保留原结果（避免哑火）。
+# 0.0 表示关闭（默认，保持评测指标 Recall@5=73% 不变）。建议启用值 0.3~0.5。
+RETRIEVAL_SIM_THRESHOLD = float(os.getenv("RETRIEVAL_SIM_THRESHOLD", "0.0"))
+
 # Reranker 二次精排 (Cross-Encoder)。评测验证可显著提升召回质量、消除噪声；
 # 纯 CPU 推理会增加少量延迟，有 GPU 更佳。默认开启以对齐评测验证过的配置。
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"

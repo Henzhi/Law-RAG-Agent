@@ -34,6 +34,7 @@ services:
       - LLM_MODEL=${LLM_MODEL:-qwen2.5:7b}
       - RERANK_ENABLED=true
       - ADJACENT_ENABLED=true
+      - RETRIEVAL_SIM_THRESHOLD=${RETRIEVAL_SIM_THRESHOLD:-0.4}
       - AGENT_ENABLED=false
       - INDEX_NAME=${INDEX_NAME:-law_index}
     depends_on:

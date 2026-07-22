@@ -113,13 +113,19 @@ def is_casual_query(query: str) -> bool:
 def classify_intent(query: str) -> bool:
     """意图识别：是否为法律相关问题？
 
-    1. 标准化后精确匹配闲聊短语 → 闲聊
-    2. 标准化后包含法律关键词 → 法律
-    3. 短查询（≤4字）包含闲聊短语 → 闲聊（二次检查）
-    4. 都不匹配 → 默认检索（宁可多检）
+    1. 正则兜底：明显闲聊（含天气/笑话等短语集合未覆盖的模式）→ 闲聊
+    2. 标准化后精确匹配闲聊短语 → 闲聊
+    3. 标准化后包含法律关键词 → 法律
+    4. 短查询（≤4字）包含闲聊短语 → 闲聊（二次检查）
+    5. 都不匹配 → 默认检索（宁可多检）
     """
     q = query.strip()
     nq = _normalize(q)
+
+    # 0. 正则兜底：与 RAG 引擎（is_casual_query）统一闲聊判定，避免天气/笑话等
+    #    漏过短语集合而误走检索。空串保留给步骤 5 默认检索，故加 q 非空保护。
+    if q and is_casual_query(query):
+        return False
 
     # 1. 精确匹配闲聊短语
     for phrase in _CASUAL_PHRASES:

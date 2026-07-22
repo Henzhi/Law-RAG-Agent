@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 from langchain_core.documents import Document
 
-from src.config import RETRIEVAL_DROP_SUMMARY_CHUNKS
+from src.config import RETRIEVAL_DROP_SUMMARY_CHUNKS, RETRIEVAL_SIM_THRESHOLD
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class FAISSRetriever(BaseRetriever):
         docs = [self._to_retrieved(doc, score) for doc, score in results]
         if RETRIEVAL_DROP_SUMMARY_CHUNKS:
             docs = [d for d in docs if d.chunk_type != "chapter_summary"]
-        return docs
+        return self._apply_sim_threshold(docs, top_k)
 
     def search_by_law(self, query: str, law_name: str, top_k: int = 5) -> list[RetrievedDoc]:
         """在指定法律内检索"""
@@ -87,7 +87,24 @@ class FAISSRetriever(BaseRetriever):
         docs = [self._to_retrieved(doc, score) for doc, score in results]
         if RETRIEVAL_DROP_SUMMARY_CHUNKS:
             docs = [d for d in docs if d.chunk_type != "chapter_summary"]
-        return docs
+        return self._apply_sim_threshold(docs, top_k)
+
+    def _apply_sim_threshold(self, docs: list[RetrievedDoc], top_k: int) -> list[RetrievedDoc]:
+        """按向量相似度阈值过滤召回结果。
+
+        RETRIEVAL_SIM_THRESHOLD <= 0 时关闭（返回原结果）；
+        过滤后为空则回退保留原结果，避免线上完全哑火。
+        """
+        if RETRIEVAL_SIM_THRESHOLD <= 0 or not docs:
+            return docs
+        filtered = [d for d in docs if d.score >= RETRIEVAL_SIM_THRESHOLD]
+        if not filtered:
+            logger.warning(
+                f"[retriever] 向量相似度阈值 {RETRIEVAL_SIM_THRESHOLD} 过滤后无候选，"
+                f"回退保留原 {len(docs)} 条结果以避免哑火"
+            )
+            return docs
+        return filtered[:top_k]
 
     def is_ready(self) -> bool:
         return self._store.store is not None and self._store.doc_count > 0

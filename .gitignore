@@ -112,7 +112,7 @@ temp_skill_extract/
 *.docx
 ~$*.docx
 
-
+docs/
 docs/docs/
 LawData/
 
