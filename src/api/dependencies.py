@@ -26,7 +26,7 @@ from src.llm.factory import create_llm_backend
 from src.embedding.factory import create_embedding_backend
 from src.embedding.vector_store import VectorStore
 from src.rag.engine import RAGEngine
-from src.rag.retriever import FAISSRetriever, PgvectorRetriever
+from src.rag.retriever import FAISSRetriever, PgvectorRetriever, PgvectorStoreRetriever
 from src.rag.hybrid_retriever import HybridRetriever
 from src.agents.graph import LawAgentGraph
 
@@ -74,14 +74,25 @@ def _create_embedder():
 
 
 def _create_retriever(embedder):
-    """根据配置创建检索器 (FAISS/pgvector)"""
+    """根据配置创建检索器 (FAISS / pgvector v2)
+
+    当 PG_ENABLED=true 时使用新的 PgvectorStore + halfvec + HNSW，
+    否则回退到 FAISS。
+    """
     from pathlib import Path
 
     store_dir = INDEX_DIR / INDEX_NAME
 
     if PG_ENABLED:
-        logger.info("使用 pgvector 检索")
-        retriever = PgvectorRetriever(embedder=embedder, conn_string=PG_CONN)
+        from src.knowledge.pgvector_store import PgvectorStore
+        logger.info("使用 pgvector v2 检索 (halfvec + HNSW)")
+        store = PgvectorStore(PG_CONN)
+        store.ensure_tables()
+        retriever = PgvectorStoreRetriever(
+            store=store,
+            embedder=embedder,
+            embedding_model=embedder.model,
+        )
         return _wrap_adjacent(retriever, store_dir)
 
     # FAISS 模式
@@ -99,7 +110,7 @@ def _create_retriever(embedder):
         retriever = HybridRetriever.from_corpus_file(vector_retriever=faiss, corpus_path=corpus_path)
         logger.info("混合检索就绪")
 
-    # 相邻扩展（放在 Reranker 之前，给精排更多上下文）
+    # 相邻扩展
     retriever = _wrap_adjacent(retriever, store_dir)
 
     # Reranker 兜底精排

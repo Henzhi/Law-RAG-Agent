@@ -127,6 +127,57 @@ class FAISSRetriever(BaseRetriever):
 # pgvector 检索器
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# pgvector v2 检索器（基于 PgvectorStore，v0.5 默认）
+# ---------------------------------------------------------------------------
+
+class PgvectorStoreRetriever(BaseRetriever):
+    """基于 PgvectorStore 的检索器（v0.5 企业级）
+
+    使用新的 document_chunks 表 + halfvec + embedding_model 隔离。
+    """
+
+    def __init__(
+        self,
+        store,          # PgvectorStore 实例
+        embedder,       # EmbeddingAdapter 或 LawEmbedder
+        embedding_model: str | None = None,
+    ):
+        self._store = store
+        self._embedder = embedder
+        self._embedding_model = embedding_model or embedder.model
+
+    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
+        vec = self._embedder.embed_query(query)
+        rows = self._store.search(
+            query_vec=vec,
+            top_k=top_k,
+            embedding_model=self._embedding_model,
+            drop_summary=RETRIEVAL_DROP_SUMMARY_CHUNKS,
+            sim_threshold=RETRIEVAL_SIM_THRESHOLD,
+        )
+        return [self._row_to_doc(r) for r in rows]
+
+    def is_ready(self) -> bool:
+        return self._store.is_ready()
+
+    @staticmethod
+    def _row_to_doc(row: dict) -> RetrievedDoc:
+        return RetrievedDoc(
+            content=row["content"],
+            score=row["score"],
+            law_name=row.get("law_name", ""),
+            chapter=row.get("chapter", ""),
+            section=row.get("section", ""),
+            article_range=row.get("article_range", ""),
+            chunk_type=row.get("chunk_type", ""),
+        )
+
+
+# ---------------------------------------------------------------------------
+# pgvector v1 检索器（旧表 law_chunks，兼容过渡期）
+# ---------------------------------------------------------------------------
+
 class PgvectorRetriever(BaseRetriever):
     """基于 PostgreSQL + pgvector 的检索器
 

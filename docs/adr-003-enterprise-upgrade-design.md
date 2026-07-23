@@ -11,7 +11,9 @@
 > | 07-23 | 1a | LLM 后端抽象层 — base.py / ollama_backend.py / openai_backend.py / factory.py + 19 测试 ✅ |
 > | 07-23 | 1b | Embedding 后端抽象层 — base.py / ollama_embedder.py / openai_embedder.py / factory.py + 24 测试 ✅ |
 | 07-23 | 1c | config.py 统一配置 + adapter 适配器 + dependencies.py 接入 ✅ |
-| 07-23 | 1d | 全面审查修复 — Bug1: 历史消息LLMMessage兼容 + Bug2: 注释过期 + 6新测试 ✅ |
+| 07-23 | 1d | 全面审查修复 — Bug1: LLMMessage兼容 + Bug2: 注释过期 + 6测试 ✅ |
+| 07-23 | 1e | 二次审查 — Bug3: base_url污染(Ollama URL误入OpenAI后端) 已修复 ✅ |
+| 07-23 | 2  | pgvector 完全替代 FAISS — 进行中 |
 
 ---
 
