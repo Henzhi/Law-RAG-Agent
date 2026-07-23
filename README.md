@@ -55,7 +55,6 @@ Law-RAG-Agent/
 │   └── src/api/                # API 封装
 ├── scripts/
 │   ├── build_index.py          # 构建 FAISS 索引
-│   ├── demo.py                 # 演示脚本 (6 步流程)
 │   ├── smoke_test.py           # 冒烟测试 (6 条路径)
 │   ├── fill_eval_dataset.py    # 测试集自动填充
 │   ├── eval_answer_quality.py  # 回答质量评测
@@ -68,7 +67,6 @@ Law-RAG-Agent/
 │   ├── test_embedding.py       # 7 用例 (向量化/重试)
 │   └── test_classify.py        # 30 用例 (意图分类)
 ├── data/
-│   ├── vector_store/           # FAISS 索引 + BM25 语料
 │   └── eval_dataset.json       # 131 条标注测试集
 ├── docs/                       # 文档
 │   ├── technical_report.md     # 技术报告
@@ -76,7 +74,9 @@ Law-RAG-Agent/
 │   ├── answer_quality.md       # 回答质量评测
 │   ├── unit_test_report.md     # 单元测试报告
 │   ├── smoke_test_report.md    # 冒烟测试报告
-│   └── retrieval_noise_fix.md  # 检索噪声优化
+│   ├── retrieval_noise_fix.md  # 检索噪声优化
+│   ├── adr-001-retrieval-config-alignment.md  # 检索配置对齐决策
+│   └── adr-002-remove-chapter-summary.md      # 移除章级摘要决策
 ├── docker/
 │   └── init.sql                # PostgreSQL 初始化
 ├── docker-compose.yml
@@ -88,32 +88,54 @@ Law-RAG-Agent/
 
 ## 快速开始
 
-### 1. 环境准备
+> 运行前需本地已具备：Python 3.12+、Node.js 18+、Ollama，并已拉取所需模型。
+
+### 0. 模型准备
 
 ```bash
-# 安装依赖
-uv sync
-
-# 安装 Ollama 并拉取模型
+# 安装 Ollama 并拉取 LLM 与 Embedding 模型
 ollama pull qwen2.5:7b
 ollama pull bge-m3
+# Reranker 由 sentence-transformers 本地加载 BAAI/bge-reranker-v2-m3
+# （需提前缓存到本地 HF 目录；程序强制离线加载，不会联网下载）
 ```
 
-### 2. 构建向量索引
+### 1. 后端启动
 
 ```bash
+# 0) 准备法律语料：将爬取并清洗好的法律 .txt 文件放入 LawData/ 目录
+
+# 1) 安装 Python 依赖（uv 自动创建虚拟环境）
+uv sync
+
+# 2) 准备环境变量（按需修改 JWT_SECRET 等）
+cp .env.example .env
+
+# 3) 首次运行必须构建 FAISS 向量索引
 uv run python scripts/build_index.py build
-```
 
-### 3. 启动服务
-
-```bash
+# 4) 启动 API 服务（默认 http://localhost:8000）
 uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
-浏览器访问 `http://localhost:8000` 打开前端界面，或访问 `http://localhost:8000/docs` 查看 Swagger API 文档。
+### 2. 前端构建
 
-### 4. Docker 部署（可选）
+前端基于 Vite，`npm run build` 将产物输出到项目根目录 `static/`，由 FastAPI 直接静态托管：
+
+```bash
+cd frontend
+npm install        # 安装依赖
+npm run build      # 构建产物输出到 ../static
+```
+
+构建完成后访问 `http://localhost:8000` 即可打开对话界面；`http://localhost:8000/docs` 为 Swagger API 文档。
+
+> 开发模式（热更新，免每次 build）：保持步骤 1 的后端运行，另开终端执行
+> ```bash
+> cd frontend && npm run dev   # http://localhost:3000，已配置 /api 代理转发到 8000
+> ```
+
+### 3. Docker 部署（可选）
 
 ```bash
 docker compose up -d
@@ -187,7 +209,7 @@ curl -X POST http://localhost:8000/api/chat \
 |:---|:---|:---|
 | `EMBED_MODEL` | `bge-m3` | Embedding 模型名 |
 | `EMBED_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
-| `EMBED_BATCH_SIZE` | `8` | 向量化批次大小 |
+| `EMBED_BATCH_SIZE` | `32` | 向量化批次大小（Ollama 受限环境可调小至 8） |
 | `LLM_MODEL` | `qwen2.5:7b` | LLM 模型名 |
 | `LLM_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
 | `LLM_TEMPERATURE` | `0.1` | 生成温度 |
@@ -197,17 +219,20 @@ curl -X POST http://localhost:8000/api/chat \
 | `RETRIEVAL_HYBRID_ENABLED` | `false` | 混合检索开关（评测为负优化） |
 | `RETRIEVAL_BM25_WEIGHT` | `0.0` | BM25 权重 |
 | `RETRIEVAL_DROP_SUMMARY_CHUNKS` | `true` | 检索时过滤章级摘要噪声（消除 30+ 条无关条文召回） |
+| `RETRIEVAL_SIM_THRESHOLD` | `0.0` | 向量相似度召回闸门（bge-m3 归一化内积，范围约 [-1,1]）；>0 时低于阈值的候选被丢弃，过滤后无候选则回退保留；建议 0.3~0.5 |
 | `RERANK_ENABLED` | `true` | Reranker 精排开关 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Reranker 模型 |
 | `RERANK_RECALL_K` | `15` | 粗排候选数 |
 | `RERANK_TOP_K` | `15` | 精排返回数 |
 | `ADJACENT_ENABLED` | `true` | 相邻条文扩展（放在 Reranker 之前丰富候选） |
 | `ADJACENT_WINDOW` | `3` | 扩展窗口 (±N) |
-| `AGENT_ENABLED` | `true` | LangGraph Agent 开关（含查询改写+答案校验+重试，优先保证回答质量） |
+| `AGENT_ENABLED` | `false` | LangGraph Agent 开关（含查询改写+答案校验+重试）；开启会增加 rewrite/validate 两次 LLM 调用、延迟上升，追求最高质量时设 `true`（`.env.example` 已开启） |
+| `AGENT_MAX_RETRIES` | `1` | 答案校验失败时的最大重试次数 |
 | `INDEX_DIR` | `data/vector_store` | FAISS 索引路径 |
-| `INDEX_NAME` | `law_index_bge` | 索引名称 |
+| `INDEX_NAME` | `law_index` | 索引名称（`.env.example` 中使用 `law_index_bge`） |
 | `JWT_SECRET` | (必填) | JWT 签名密钥 |
-| `DATABASE_URL` | (可选) | PostgreSQL 连接串 |
+| `PG_ENABLED` | `false` | 使用 PostgreSQL + pgvector 替代 FAISS |
+| `PG_CONN` | `postgresql://lawrag:lawrag123@localhost:5432/lawrag` | pgvector 连接串 |
 
 ---
 
@@ -291,9 +316,6 @@ intent (意图识别)
 ```bash
 # 构建索引
 uv run python scripts/build_index.py build
-
-# 演示脚本 (6 步全流程)
-uv run python scripts/demo.py
 
 # 冒烟测试
 uv run python scripts/smoke_test.py
