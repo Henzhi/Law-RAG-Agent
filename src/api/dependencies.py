@@ -43,12 +43,15 @@ def get_llm():
     根据 LLM_BACKEND 环境变量自动选择后端:
       ollama → OllamaBackend（本地）
       openai → OpenAICompatibleBackend（API）
+
+    base_url 等连接参数由工厂函数从环境变量读取，
+    此处只传模型无关的通用参数（temperature/top_p/max_tokens）。
     """
     global _llm
     if _llm is None:
         backend = create_llm_backend(
             backend_type=LLM_BACKEND,
-            model=LLM_MODEL, base_url=LLM_BASE_URL,
+            model=LLM_MODEL,
             temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P,
             max_tokens=LLM_MAX_TOKENS, max_retries=LLM_MAX_RETRIES,
         )
