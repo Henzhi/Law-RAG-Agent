@@ -1,0 +1,104 @@
+"""
+LLM / Embedding 后端适配器。
+
+将新的 LLMBackend / EmbeddingBackend 适配为旧 API，使现有代码
+（RAGEngine、LawAgentGraph、FAISSRetriever 等）无需改动即可使用新后端。
+
+过渡方案：Phase 1 阶段使用，后续逐步替换为直接使用新 API。
+"""
+from __future__ import annotations
+
+from typing import Iterator, List
+
+from src.llm.base import LLMBackend
+from src.embedding.base import EmbeddingBackend
+
+
+# ---------------------------------------------------------------------------
+# LLM 适配器 — 兼容旧 LawLLM 接口
+# ---------------------------------------------------------------------------
+
+class LLMAdapter:
+    """将 LLMBackend 适配为旧 LawLLM 兼容接口
+
+    提供 chat_with_context / chat_stream_with_context 等旧 API，
+    内部委托给新后端。
+    """
+
+    def __init__(self, backend: LLMBackend):
+        self._backend = backend
+        self.model_name = backend.model
+
+    # ----- 基础 API -----
+
+    def chat(
+        self,
+        user_message: str,
+        history: list | None = None,
+        system_prompt: str | None = None,
+    ) -> str:
+        return self._backend.chat(user_message, history, system_prompt)
+
+    def chat_stream(
+        self,
+        user_message: str,
+        history: list | None = None,
+        system_prompt: str | None = None,
+    ) -> Iterator[str]:
+        yield from self._backend.chat_stream(user_message, history, system_prompt)
+
+    # ----- RAG 上下文 API（兼容旧 LawLLM）-----
+
+    def chat_with_context(
+        self,
+        user_message: str,
+        context_docs: str,
+        history: list | None = None,
+    ) -> str:
+        prompt = self._backend._build_rag_prompt(user_message, context_docs)
+        return self.chat(prompt, history)
+
+    def chat_stream_with_context(
+        self,
+        user_message: str,
+        context_docs: str,
+        history: list | None = None,
+    ) -> Iterator[str]:
+        prompt = self._backend._build_rag_prompt(user_message, context_docs)
+        yield from self.chat_stream(prompt, history)
+
+    # ----- 上下文窗口 -----
+
+    def get_context_window(self) -> int:
+        return self._backend.get_context_window()
+
+
+# ---------------------------------------------------------------------------
+# Embedding 适配器 — 兼容旧 LawEmbedder 接口
+# ---------------------------------------------------------------------------
+
+class EmbeddingAdapter:
+    """将 EmbeddingBackend 适配为旧 LawEmbedder 兼容接口
+
+    实现 LangChain Embeddings 接口，可直接用于 FAISS 向量库。
+    """
+
+    def __init__(self, backend: EmbeddingBackend):
+        self._backend = backend
+        self.model = backend.model
+
+    # ----- 旧 API -----
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._backend.embed(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._backend.embed_query(text)
+
+    def embed_documents_with_progress(
+        self, texts: List[str], show_progress: bool = True
+    ) -> List[List[float]]:
+        return self._backend.embed_with_progress(texts, show_progress)
+
+    def get_embedding_dim(self) -> int:
+        return self._backend.get_dimension()

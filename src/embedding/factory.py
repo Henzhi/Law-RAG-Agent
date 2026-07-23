@@ -37,7 +37,7 @@ def create_embedding_backend(
         EmbeddingBackend 实例
     """
     if backend_type is None:
-        backend_type = os.getenv("EMBED_BACKEND") or os.getenv("LLM_BACKEND", "ollama")
+        backend_type = os.getenv("EMBED_BACKEND") or "ollama"
 
     backend_type = backend_type.lower()
 

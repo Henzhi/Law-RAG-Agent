@@ -28,6 +28,7 @@ _OPENAI_CONTEXT_WINDOWS = {
     "gpt-4-turbo":           120000,
     "gpt-3.5-turbo":          16000,
     "deepseek-chat":          60000,
+    "deepseek-v4-flash":      32000,
     "deepseek-reasoner":      60000,
     "qwen-turbo":             32000,
     "qwen-plus":             32000,

@@ -190,7 +190,7 @@ class TestEmbeddingFactory:
         assert isinstance(backend, OpenAIEmbedder)
         assert backend.model == "text-embedding-3-small"
 
-    @patch.dict(os.environ, {"LLM_BACKEND": "ollama"})
+    @patch.dict(os.environ, {"EMBED_BACKEND": "ollama"})
     @patch("src.embedding.ollama_embedder.ollama.Client")
     def test_create_from_env_ollama(self, mock_client):
         from src.embedding.factory import create_embedding_backend
@@ -198,7 +198,7 @@ class TestEmbeddingFactory:
         backend = create_embedding_backend()
         assert isinstance(backend, OllamaEmbedder)
 
-    @patch.dict(os.environ, {"LLM_BACKEND": "openai", "OPENAI_API_KEY": "sk-test"})
+    @patch.dict(os.environ, {"EMBED_BACKEND": "openai", "OPENAI_API_KEY": "sk-test"})
     @patch("src.embedding.openai_embedder.OpenAI")
     def test_create_from_env_openai(self, mock_openai):
         from src.embedding.factory import create_embedding_backend

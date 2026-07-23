@@ -9,7 +9,8 @@
 > | 日期 | 步骤 | 内容 |
 > |------|------|------|
 > | 07-23 | 1a | LLM 后端抽象层 — base.py / ollama_backend.py / openai_backend.py / factory.py + 19 测试 ✅ |
-> | 07-23 | 1b | Embedding 后端抽象层 — 进行中 |
+> | 07-23 | 1b | Embedding 后端抽象层 — base.py / ollama_embedder.py / openai_embedder.py / factory.py + 24 测试 ✅ |
+| 07-23 | 1c | config.py 统一配置 + adapter 适配器 + dependencies.py 接入 ✅ |
 
 ---
 

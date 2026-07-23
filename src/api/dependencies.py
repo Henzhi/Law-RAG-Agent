@@ -3,6 +3,8 @@ API 依赖注入。
 
 管理 LLM、向量库、RAG 引擎 / Agent 等单例，所有可配参数从 src.config 读取。
 支持 FAISS 和 pgvector 两种后端。
+
+v0.5: 引入多后端工厂函数 + 适配器，可通过 .env 切换 Ollama/OpenAI。
 """
 from __future__ import annotations
 
@@ -10,7 +12,8 @@ import logging
 
 from src.config import (
     LLM_MODEL, LLM_BASE_URL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
-    EMBED_MODEL, EMBED_BASE_URL, EMBED_BATCH_SIZE,
+    LLM_BACKEND, LLM_MAX_RETRIES,
+    EMBED_MODEL, EMBED_BASE_URL, EMBED_BATCH_SIZE, EMBED_MAX_RETRIES,
     RETRIEVAL_TOP_K, RETRIEVAL_HYBRID_ENABLED,
     RERANK_ENABLED, RERANK_MODEL, RERANK_RECALL_K, RERANK_TOP_K,
     AGENT_MAX_RETRIES,
@@ -18,9 +21,10 @@ from src.config import (
     INDEX_NAME, INDEX_DIR,
     ADJACENT_ENABLED, ADJACENT_WINDOW,
 )
-from src.embedding.embedder import LawEmbedder
+from src.llm.adapter import LLMAdapter, EmbeddingAdapter
+from src.llm.factory import create_llm_backend
+from src.embedding.factory import create_embedding_backend
 from src.embedding.vector_store import VectorStore
-from src.llm.client import LawLLM, LLMConfig
 from src.rag.engine import RAGEngine
 from src.rag.retriever import FAISSRetriever, PgvectorRetriever
 from src.rag.hybrid_retriever import HybridRetriever
@@ -30,21 +34,43 @@ logger = logging.getLogger(__name__)
 
 _engine: RAGEngine | None = None
 _agent: LawAgentGraph | None = None
-_llm: LawLLM | None = None
+_llm: object | None = None  # LLMAdapter，兼容旧 LawLLM 接口
 
 
-def get_llm() -> LawLLM:
+def get_llm():
+    """获取 LLM 实例（通过适配器兼容旧 API）
+
+    根据 LLM_BACKEND 环境变量自动选择后端:
+      ollama → OllamaBackend（本地）
+      openai → OpenAICompatibleBackend（API）
+    """
     global _llm
     if _llm is None:
-        logger.info(f"LLM 初始化: {LLM_MODEL}")
-        _llm = LawLLM(
+        backend = create_llm_backend(
+            backend_type=LLM_BACKEND,
             model=LLM_MODEL, base_url=LLM_BASE_URL,
-            config=LLMConfig(temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P, num_predict=LLM_MAX_TOKENS),
+            temperature=LLM_TEMPERATURE, top_p=LLM_TOP_P,
+            max_tokens=LLM_MAX_TOKENS, max_retries=LLM_MAX_RETRIES,
         )
+        _llm = LLMAdapter(backend)
+        logger.info(f"LLM 就绪: {LLM_BACKEND}:{LLM_MODEL} (context_window={backend.get_context_window()})")
     return _llm
 
 
-def _create_retriever(embedder: LawEmbedder):
+def _create_embedder():
+    """根据配置创建 Embedding 实例（通过适配器兼容旧 API）
+
+    根据 EMBED_BACKEND（回退到 LLM_BACKEND）自动选择后端。
+    """
+    backend = create_embedding_backend(
+        backend_type=None,  # 自动从环境变量读取
+        model=EMBED_MODEL, base_url=EMBED_BASE_URL,
+        batch_size=EMBED_BATCH_SIZE, max_retries=EMBED_MAX_RETRIES,
+    )
+    return EmbeddingAdapter(backend)
+
+
+def _create_retriever(embedder):
     """根据配置创建检索器 (FAISS/pgvector)"""
     from pathlib import Path
 
@@ -73,7 +99,7 @@ def _create_retriever(embedder: LawEmbedder):
     # 相邻扩展（放在 Reranker 之前，给精排更多上下文）
     retriever = _wrap_adjacent(retriever, store_dir)
 
-    # Reranker 兜底精排，保证前端只收 top_k 条
+    # Reranker 兜底精排
     if RERANK_ENABLED:
         from src.rag.reranker import Reranker, RerankRetriever
         reranker = Reranker(model_name=RERANK_MODEL)
@@ -97,7 +123,7 @@ def get_engine() -> RAGEngine:
     global _engine
     if _engine is None:
         llm = get_llm()
-        embedder = LawEmbedder(model=EMBED_MODEL, base_url=EMBED_BASE_URL, batch_size=EMBED_BATCH_SIZE)
+        embedder = _create_embedder()
         retriever = _create_retriever(embedder)
         _engine = RAGEngine(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K)
         logger.info("RAG 引擎就绪")
@@ -111,7 +137,7 @@ def get_agent(force_reload: bool = False) -> LawAgentGraph:
         _agent = None
     if _agent is None:
         llm = get_llm()
-        embedder = LawEmbedder(model=EMBED_MODEL, base_url=EMBED_BASE_URL, batch_size=EMBED_BATCH_SIZE)
+        embedder = _create_embedder()
         retriever = _create_retriever(embedder)
         _agent = LawAgentGraph(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K, max_retries=AGENT_MAX_RETRIES)
         logger.info("LangGraph Agent 就绪")

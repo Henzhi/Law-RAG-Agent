@@ -35,20 +35,34 @@ os.environ["HF_DATASETS_OFFLINE"] = "1"
 # LLM
 # ---------------------------------------------------------------------------
 
+# 后端类型：ollama | openai
+# 未设置 EMBED_BACKEND 时也会回退到此值
+LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
 LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2048"))
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+
+# OpenAI 兼容后端配置
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-chat")
+OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 
 
 # ---------------------------------------------------------------------------
 # Embedding
 # ---------------------------------------------------------------------------
 
+# 后端类型：ollama | openai
+# 未设置时回退到 LLM_BACKEND 的值
+EMBED_BACKEND = os.getenv("EMBED_BACKEND", "")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "http://localhost:11434")
 EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
+EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "3"))
 
 
 # ---------------------------------------------------------------------------
