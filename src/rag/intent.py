@@ -7,6 +7,7 @@
 - is_casual_query(query)  -> 是否为明显闲聊/问候（正则判定，供 RAGEngine 路由与元数据标记）
 - classify_intent(query)  -> 是否为法律问题（关键词判定，供 LangGraph Agent 路由）
 - needs_retrieval(query, llm) -> 是否需要检索（正则 + 长查询快路径 + LLM 自省兜底）
+- sanitize_input(query)   -> 输入安全过滤（Prompt 注入防御 + 内容审核）
 
 注意：is_casual_query 与 classify_intent 使用不同算法（历史行为需分别保留，
 否则会破坏既有单测），但共用本模块的词典常量，消除之前分散在两处的重复代码。
@@ -84,6 +85,79 @@ _LEGAL_KEYWORDS = [
     "怎么罚", "判多久", "合法吗", "违法吗", "要不要赔",
     "能告吗", "算不算", "有没有责任",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Prompt 注入防御：输入安全过滤
+# ---------------------------------------------------------------------------
+
+# Prompt 注入攻击模式（命中任一即拒绝请求）
+_INJECTION_PATTERNS = [
+    # System prompt 泄露 / 越狱
+    r'忽略.*(指令|规则|限制|prompt|system|提示)',
+    r'(ignore|forget|disregard).*(instruction|rule|prompt|system)',
+    r'你.*(是|现在|扮演|作为).*(一个|新的).*(角色|身份)',
+    r'DAN\b|jailbreak|越狱',
+    r'(print|show|display|reveal|输出).*(system.?prompt|instructions|提示词|系统指令)',
+    r'repeat\s+(after\s+me|the\s+following|this)',
+    # 角色劫持
+    r'(现在开始|从现在起|从今以后).*(你是|你叫|你变成)',
+    r'你不再是.*你是',
+    r'forget\s+(all|everything).*(before|previous|above)',
+    # Token 泄露
+    r'(api.?key|secret|token|password|密码).*(告诉我|给我|显示|输出|是什么)',
+    r'(what|where)\s+is\s+(your|the)\s+(api.?key|token|secret)',
+]
+
+# 敏感内容关键词（涉黄涉政，命中后拒绝服务）
+_SENSITIVE_KEYWORDS = [
+    # 政治敏感
+    "习近平", "江泽民", "胡锦涛", "六四", "天安门", "法轮功",
+    "台独", "藏独", "疆独", "港独",
+    # 色情暴力
+    "色情", "淫秽", "裸体", "性交", "强奸", "杀人方法",
+]
+
+# 拒绝回复模板
+_INJECTION_REJECT_MSG = "该问题不在我的服务范围内，请提出合法的法律咨询问题。"
+_SENSITIVE_REJECT_MSG = "该问题不在我的服务范围内。"
+
+
+def sanitize_input(query: str) -> tuple[str, bool, str | None]:
+    """输入安全过滤，返回 (清洗后文本, 是否安全, 拒绝原因)
+
+    Args:
+        query: 原始用户输入
+
+    Returns:
+        (清洗后文本, 是否安全, 拒绝原因或None)
+        - 安全: 返回原文本 + True + None
+        - 不安全: 返回拒绝消息 + False + 拒绝原因
+    """
+    if not query or not query.strip():
+        return query, True, None
+
+    q = query.strip()
+
+    # 1. Prompt 注入检测
+    for pattern in _INJECTION_PATTERNS:
+        if re.search(pattern, q, re.IGNORECASE):
+            logger.warning(f"[安全] Prompt 注入拦截: pattern={pattern}, query_preview={q[:100]}")
+            return _INJECTION_REJECT_MSG, False, "prompt_injection"
+
+    # 2. 长度限制（防止资源耗尽攻击）
+    if len(q) > 2000:
+        logger.warning(f"[安全] 输入过长被截断: len={len(q)}")
+        q = q[:2000]
+
+    # 3. 敏感内容检测
+    nq = _normalize(q)
+    for kw in _SENSITIVE_KEYWORDS:
+        if _normalize(kw) in nq:
+            logger.warning(f"[安全] 敏感词拦截: keyword={kw}, query_preview={q[:100]}")
+            return _SENSITIVE_REJECT_MSG, False, "sensitive_content"
+
+    return q, True, None
 
 
 def _normalize(text: str) -> str:

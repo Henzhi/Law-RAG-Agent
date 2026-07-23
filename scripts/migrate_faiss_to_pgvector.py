@@ -59,10 +59,19 @@ def main():
         logger.warning(f"document_chunks 已有 {existing} 条数据，将清空后重新导入")
         import psycopg2
         conn = psycopg2.connect(PG_CONN)
-        conn.cursor().execute("DELETE FROM document_chunks")
-        conn.cursor().execute("DELETE FROM documents")
-        conn.commit()
-        conn.close()
+        try:
+            # 先删块（有外键依赖），再删文档
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM document_chunks")
+                cur.execute("DELETE FROM documents")
+            conn.commit()
+            logger.info("已清空旧数据")
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"清空旧数据失败: {e}")
+            raise
+        finally:
+            conn.close()
 
     # 4. 逐条迁移
     BATCH_SIZE = 32

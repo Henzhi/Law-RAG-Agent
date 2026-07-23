@@ -42,6 +42,7 @@ class OllamaEmbedder(EmbeddingBackend):
         )
         self.base_url = base_url
         self._client = self._init_client()
+        self._cached_dimension: int | None = None
 
     def _init_client(self) -> ollama.Client:
         host = self.base_url.replace("http://", "").replace("https://", "")
@@ -51,7 +52,20 @@ class OllamaEmbedder(EmbeddingBackend):
         return f"ollama:{self.model}"
 
     def get_dimension(self) -> int:
-        return len(self.embed_query("test"))
+        if self._cached_dimension is None:
+            # 已知模型的维度表，避免不必要的 API 调用
+            _KNOWN_DIMS = {
+                "bge-m3": 1024,
+                "nomic-embed-text": 768,
+                "bge-large": 1024,
+                "mxbai-embed-large": 1024,
+            }
+            known = _KNOWN_DIMS.get(self.model)
+            if known:
+                self._cached_dimension = known
+            else:
+                self._cached_dimension = len(self.embed_query("test"))
+        return self._cached_dimension
 
     # ------------------------------------------------------------------
     # EmbeddingBackend 抽象方法实现

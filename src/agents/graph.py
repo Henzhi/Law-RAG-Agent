@@ -33,6 +33,7 @@ class AgentState(TypedDict):
     retrieved_docs: list[dict]      # 检索结果
     answer: str                     # 生成的回答
     validation_passed: bool         # 校验是否通过
+    validation_feedback: str        # 校验失败时的反馈信息
     retry_count: int                # 重试次数
     is_legal_query: bool            # 意图识别：是否法律问题
 
@@ -302,12 +303,22 @@ class LawAgentGraph:
             for d in docs[:5]
         )
         prompt = VALIDATOR_PROMPT.format(query=query, context=ctx, answer=answer[:800])
-        result = self.llm.chat(prompt, system_prompt="你是一个法律回答审核员。").strip().upper()
+        result = self.llm.chat(prompt, system_prompt="你是一个法律回答审核员。").strip()
 
-        passed = "PASS" in result
+        passed = "PASS" in result.upper()
         if not passed and retry < self.max_retries:
-            logger.info(f"校验未通过，重试 {retry + 1}/{self.max_retries}")
-            return {"validation_passed": False, "retry_count": retry + 1}
+            # 提取失败原因（"理由："之后的内容）
+            reason = ""
+            if "理由" in result:
+                reason = result.split("理由", 1)[1].strip().lstrip("：:").strip()
+            elif "\n" in result:
+                reason = result.split("\n", 1)[1].strip()
+            logger.info(f"校验未通过，重试 {retry + 1}/{self.max_retries}: {reason}")
+            return {
+                "validation_passed": False,
+                "retry_count": retry + 1,
+                "validation_feedback": reason or "回答未引用法律名称或条款号",
+            }
 
         return {"validation_passed": True}
 
@@ -329,6 +340,7 @@ class LawAgentGraph:
             "retrieved_docs": [],
             "answer": "",
             "validation_passed": False,
+            "validation_feedback": "",
             "retry_count": 0,
             "is_legal_query": True,
         }

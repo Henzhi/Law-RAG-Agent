@@ -15,6 +15,7 @@ from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, 
 from .auth import get_current_user, register_user, login_user
 from src.config import AGENT_ENABLED
 from src.rag.engine import needs_retrieval
+from src.rag.intent import sanitize_input
 from src.llm.client import Message
 
 router = APIRouter()
@@ -58,6 +59,13 @@ async def health():
 @router.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     t_start = time.perf_counter()
+
+    # 输入安全过滤（Prompt 注入 + 敏感内容检测）
+    safe_query, is_safe, reject_reason = sanitize_input(req.query)
+    if not is_safe:
+        perf_logger.warning(f"[chat] blocked: reason={reject_reason} query_preview={req.query[:100]}")
+        return ChatResponse(query=req.query, answer=safe_query, sources=[], is_casual=True)
+
     try:
         if AGENT_ENABLED:
             agent = get_agent()
@@ -121,6 +129,19 @@ def _sse(data: dict) -> str:
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest):
     t_start = time.perf_counter()
+
+    # 输入安全过滤（Prompt 注入 + 敏感内容检测）
+    safe_query, is_safe, reject_reason = sanitize_input(req.query)
+    if not is_safe:
+        async def _reject_stream():
+            yield _sse({"type": "error", "content": safe_query})
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(
+            _reject_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     if AGENT_ENABLED:
         agent = get_agent()
 

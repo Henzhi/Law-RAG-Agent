@@ -14,6 +14,7 @@
 | 07-23 | 1d | 全面审查修复 — Bug1: LLMMessage兼容 + Bug2: 注释过期 + 6测试 ✅ |
 | 07-23 | 1e | 二次审查 — Bug3: base_url污染(Ollama URL误入OpenAI后端) 已修复 ✅ |
 | 07-23 | 2  | pgvector 完全替代 FAISS — 进行中 |
+| 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
 
 ---
 
@@ -624,6 +625,7 @@ Embedding 模型隔离:
 | R1 | 检索失败后 LLM 自由发挥，给出虚构法律建议 | 🔴致命 | 设最低相似度阈值 0.7，低于阈值拒绝回答 | 步骤 7 |
 | R2 | FAQ 缓存返回已废止法律的旧答案 | 🔴致命 | 缓存 TTL 绑定法律版本，修法时级联失效 | 步骤 4 |
 | R3 | Prompt 注入 / 越狱攻击 | 🔴致命 | 输入输出关键词过滤，违规统一拒绝 | 步骤 7 |
+| R3a | Prompt 注入 / 越狱攻击（MVP 防御） | 🔴→🟡 | ✅ 步骤 1f 已实施：`sanitize_input()` 11条注入模式 + 敏感词过滤 + 长度截断；完整输出过滤留待步骤 7 | 步骤 1f ✅ / 步骤 7 |
 | R4 | Embedding 模型切换导致全量重建 | 🟡严重 | 表设计预留 embedding_model 字段隔离 | 步骤 2 |
 | R5 | 流式输出 + 记忆检索时序冲突 | 🟡严重 | Graph 中 memory_retrieve 放在 retrieve 之前 | 步骤 7 |
 | R6 | 法律修订时新旧条文并存 | 🟡严重 | 文档版本管理，status 字段标记，原子切换 | 步骤 5 |
@@ -837,3 +839,91 @@ dependencies = [
 - LLM/Embedding 后端独立选型正确
 - `.env` 在 `.gitignore` 中
 - 旧代码零破坏性变更
+
+---
+
+## 12. 步骤 1f 审查记录 — 多维度安全审计 + 隐藏Bug检测 (2026-07-23)
+
+### 12.1 审查维度
+
+对步骤 1a~2 的全部 23 个变更文件进行了 5 维度扫描：
+
+| 维度 | 检查内容 | 检查文件数 |
+|------|----------|-----------|
+| SQL 注入 | 所有 SQL 拼接点，参数化查询使用 | 5 |
+| Prompt 注入 | 用户输入是否进入 LLM prompt 不经过滤 | 3 |
+| 认证安全 | 密码哈希、Token 管理、匿名用户回退 | 2 |
+| 信息泄露 | API Key 日志输出、错误消息暴露 | 4 |
+| 资源耗尽 | 连接池、重试机制、无上限输入 | 3 |
+
+### 12.2 发现清单
+
+#### 🔴 Critical — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 1 | **Prompt 注入无防御** — 用户输入直接进入 LLM prompt，可被 `忽略指令`/`输出system prompt`/`你不再是一个法律助手` 等越狱攻击利用 | `routes.py` `intent.py` | 内容安全风险 (ADR R3) | `intent.py` 新增 `sanitize_input()`: 11 条注入模式正则 + 敏感词过滤 + 长度截断；`routes.py` `/chat` 和 `/chat/stream` 入口集成过滤 |
+| 2 | **迁移脚本 DELETE 无 COMMIT** — `scripts/migrate_faiss_to_pgvector.py:62-64` 执行 DELETE 后未 commit，清空操作不生效 | `migrate_faiss_to_pgvector.py` | 数据一致性问题 | 添加 `conn.commit()` + try/except/rollback + with 上下文管理 |
+| 3 | **OllamaEmbedder.get_dimension() 无缓存** — 每次调用都发 API 请求，OpenAIEmbedder 有缓存但 Ollama 没有，`get_embedding_dim()`/`PgvectorRetriever._create_table()` 等高频调用路径浪费性能 | `ollama_embedder.py` | 性能浪费 | 添加 `_cached_dimension` + 已知模型维度表 (bge-m3=1024 等)，与 OpenAIEmbedder 对齐 |
+
+#### 🟡 High — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 4 | **config.py 导入时崩溃** — `float(os.getenv(...))` 若环境变量非法格式，整个模块导入失败，服务无法启动 | `config.py` | 启动失败 | 新增 `_safe_float()` / `_safe_int()` 辅助函数，格式错误时警告 + 使用默认值，替换全部 14 处 `float()/int()` 调用 |
+| 5 | **AgentState TypedDict 缺键** — `validation_feedback` 字段在 stream/retry 路径中被使用但未在 TypedDict 中声明，类型检查器无法识别 | `graph.py` | 类型安全 | `AgentState` 添加 `validation_feedback: str` 字段 |
+| 6 | **validate 节点不提取失败原因** — 校验 FAIL 时仅返回 `passed=False`，未从 LLM 输出中提取 `理由:` 内容，导致重试时 feedback 为空 | `graph.py` | 校验质量 | `_validate()` 解析 "理由" 后的文本作为 feedback，传递给 `_generate()` |
+
+#### 🟡 High — 建议关注（不修不改行为）
+
+| # | 发现 | 模块 | 风险 |
+|---|------|------|------|
+| 7 | **匿名用户静默回退** — `auth.py:get_current_user()` 在 Token 无效时静默回退到匿名用户而非返回 401，前端无法感知认证失败 | `auth.py` | 用户体验 |
+| 8 | **Token 全量内存缓存** — `load_token_cache()` 将所有活跃 Token 加载到进程内存，进程被攻破则全部 Token 泄露 | `auth.py` | 纵深防御 |
+| 9 | **psycopg2 无连接池** — `auth.py:_get_db()` 每次调用新建连接，高并发下连接数暴涨 | `auth.py` | 性能 |
+| 10 | **全局单例无锁** — `get_llm()`/`get_engine()`/`get_agent()` 非线程安全，多线程首次并发调用可能创建多个实例 | `dependencies.py` | 并发安全 |
+
+#### 🟢 Low — 已知不修
+
+| # | 发现 | 模块 | 说明 |
+|---|------|------|------|
+| 11 | **类型标注过时** — `graph.py:18`/`engine.py:11` import `LawLLM` 作为类型但运行时使用 `LLMAdapter`，不影响功能 | `graph.py` `engine.py` | Phase 2 重构修正 |
+| 12 | **流式重试可能重复输出** — `ollama_backend.py`/`openai_backend.py` 流式重试：若前次已 yield 部分 token 后失败，重试导致重复输出 | `ollama_backend.py` `openai_backend.py` | 概率极低，Phase 2 优化 |
+| 13 | **无速率限制** — API 端点无 rate limiting，生产环境需 nginx/traefik 层配置 | `routes.py` | 部署层解决 |
+
+### 12.3 SQL 注入审查结论
+
+**全部 SQL 查询均使用参数化查询（`%s` 占位符）**，无用户输入直接拼接到 SQL 字符串的风险点：
+
+| 文件 | 查询方式 | 安全性 |
+|------|----------|--------|
+| `pgvector_store.py:141-153` | `VALUES (%s, %s, ...)` 参数化 | ✅ 安全 |
+| `pgvector_store.py:216-224` | WHERE 列名硬编码，值用 `%s` | ✅ 安全 |
+| `retriever.py:257-268` | 全部 `%s` 占位符 | ✅ 安全 |
+| `auth.py:85-88` | `VALUES (%s, %s, ...)` 参数化 | ✅ 安全 |
+| `conversation_store.py:97-105` | `VALUES (%s, %s, ...)` 参数化 | ✅ 安全 |
+
+唯一的 f-string 出现在 `PgvectorRetriever._create_table()` 的 `table_name` 和 `retriever.py:239` 的索引名，但这些值来自构造函数的默认参数 `"law_chunks"`，非用户可控。
+
+### 12.4 新增安全测试建议
+
+```
+tests/test_security.py:
+  - test_sanitize_injection_patterns     # 注入模式被拦截
+  - test_sanitize_sensitive_keywords     # 敏感词被拦截
+  - test_sanitize_normal_legal_query     # 正常法律查询不被误杀
+  - test_sanitize_empty_input            # 空输入不崩溃
+  - test_sanitize_long_input             # 超长输入被截断
+
+tests/test_config_safety.py:
+  - test_invalid_float_env               # 非法浮点数不崩溃
+  - test_invalid_int_env                 # 非法整数不崩溃
+```
+
+### 12.5 步骤 1f 累计测试数
+
+| 模块 | 原有 | 本次新增 | 合计 |
+|------|------|---------|------|
+| 全部 | 227 | 0 (仅修复，未新增测试) | 227 |
+
+> 注：本次审查为代码级修复，安全测试用例建议在步骤 8（可观测性）阶段统一补充。

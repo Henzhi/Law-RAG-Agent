@@ -31,6 +31,34 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 
+def _safe_float(key: str, default: float) -> float:
+    """安全获取浮点型环境变量，格式错误时使用默认值并警告"""
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        logging.getLogger(__name__).warning(
+            f"环境变量 {key}='{val}' 不是合法浮点数，使用默认值 {default}"
+        )
+        return default
+
+
+def _safe_int(key: str, default: int) -> int:
+    """安全获取整型环境变量，格式错误时使用默认值并警告"""
+    val = os.getenv(key)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        logging.getLogger(__name__).warning(
+            f"环境变量 {key}='{val}' 不是合法整数，使用默认值 {default}"
+        )
+        return default
+
+
 # ---------------------------------------------------------------------------
 # LLM
 # ---------------------------------------------------------------------------
@@ -40,10 +68,10 @@ os.environ["HF_DATASETS_OFFLINE"] = "1"
 LLM_BACKEND = os.getenv("LLM_BACKEND", "ollama")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen2.5:7b")
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
-LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
-LLM_TOP_P = float(os.getenv("LLM_TOP_P", "0.9"))
-LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "2048"))
-LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
+LLM_TEMPERATURE = _safe_float("LLM_TEMPERATURE", 0.1)
+LLM_TOP_P = _safe_float("LLM_TOP_P", 0.9)
+LLM_MAX_TOKENS = _safe_int("LLM_MAX_TOKENS", 2048)
+LLM_MAX_RETRIES = _safe_int("LLM_MAX_RETRIES", 3)
 
 # OpenAI 兼容后端配置
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -61,17 +89,17 @@ OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 EMBED_BACKEND = os.getenv("EMBED_BACKEND", "")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "bge-m3")
 EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "http://localhost:11434")
-EMBED_BATCH_SIZE = int(os.getenv("EMBED_BATCH_SIZE", "32"))
-EMBED_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "3"))
+EMBED_BATCH_SIZE = _safe_int("EMBED_BATCH_SIZE", 32)
+EMBED_MAX_RETRIES = _safe_int("EMBED_MAX_RETRIES", 3)
 
 
 # ---------------------------------------------------------------------------
 # 检索
 # ---------------------------------------------------------------------------
 
-RETRIEVAL_TOP_K = int(os.getenv("RETRIEVAL_TOP_K", "5"))
+RETRIEVAL_TOP_K = _safe_int("RETRIEVAL_TOP_K", 5)
 RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "false").lower() == "true"
-RETRIEVAL_BM25_WEIGHT = float(os.getenv("RETRIEVAL_BM25_WEIGHT", "0.0"))
+RETRIEVAL_BM25_WEIGHT = _safe_float("RETRIEVAL_BM25_WEIGHT", 0.0)
 
 # 检索时是否过滤章级摘要 chunk（噪声大，评测已验证应过滤）
 # 在检索层统一拦截，避免运行时出现 30+ 条无关条文被召回的问题
@@ -80,18 +108,18 @@ RETRIEVAL_DROP_SUMMARY_CHUNKS = os.getenv("RETRIEVAL_DROP_SUMMARY_CHUNKS", "true
 # 向量相似度召回阈值（bge-m3 归一化内积，范围约 [-1, 1]，0.95≈强相关、<0.4 视为较差）。
 # 仅作为召回质量闸门：向量分数低于阈值的结果被丢弃；若过滤后无候选则回退保留原结果（避免哑火）。
 # 0.0 表示关闭（默认，保持评测指标 Recall@5=73% 不变）。建议启用值 0.3~0.5。
-RETRIEVAL_SIM_THRESHOLD = float(os.getenv("RETRIEVAL_SIM_THRESHOLD", "0.0"))
+RETRIEVAL_SIM_THRESHOLD = _safe_float("RETRIEVAL_SIM_THRESHOLD", 0.0)
 
 # Reranker 二次精排 (Cross-Encoder)。评测验证可显著提升召回质量、消除噪声；
 # 纯 CPU 推理会增加少量延迟，有 GPU 更佳。默认开启以对齐评测验证过的配置。
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"
 RERANK_MODEL = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3")
-RERANK_RECALL_K = int(os.getenv("RERANK_RECALL_K", "15"))  # 粗排召回数
-RERANK_TOP_K = int(os.getenv("RERANK_TOP_K", "15"))          # 精排后返回数
+RERANK_RECALL_K = _safe_int("RERANK_RECALL_K", 15)  # 粗排召回数
+RERANK_TOP_K = _safe_int("RERANK_TOP_K", 15)          # 精排后返回数
 
 # 连续片段扩展：检索后自动拉取相邻 ±N 条条文
 ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "true").lower() == "true"
-ADJACENT_WINDOW = int(os.getenv("ADJACENT_WINDOW", "3"))     # ±N 条
+ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 3)     # ±N 条
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +138,7 @@ INDEX_DIR = _PROJECT_ROOT / os.getenv("INDEX_DIR", "data/vector_store")
 # 开启后每条查询会额外发起 rewrite + validate 两次 LLM 调用，延迟显著上升；
 # 追求最高回答质量时可设为 true（需 GPU 或接受慢速）。检索质量与噪声过滤不依赖它。
 AGENT_ENABLED = os.getenv("AGENT_ENABLED", "false").lower() == "true"
-AGENT_MAX_RETRIES = int(os.getenv("AGENT_MAX_RETRIES", "1"))
+AGENT_MAX_RETRIES = _safe_int("AGENT_MAX_RETRIES", 1)
 
 # ---------------------------------------------------------------------------
 # pgvector
@@ -124,4 +152,4 @@ PG_CONN = os.getenv("PG_CONN", "postgresql://lawrag:lawrag123@localhost:5432/law
 # ---------------------------------------------------------------------------
 
 HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", "8000"))
+PORT = _safe_int("PORT", 8000)
