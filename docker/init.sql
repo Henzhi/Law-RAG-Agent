@@ -1,117 +1,183 @@
+-- ============================================================
+-- Law-RAG-Agent v0.5 数据库初始化
+-- PostgreSQL 15+ / pgvector 0.7+
+-- ============================================================
+
+-- 启用 pgvector 扩展（向量检索核心）
+-- 支持 vector（全精度）、halfvec（半精度，存储减半）、sparsevec 三种向量类型
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- 用户表（username + 密码哈希）
+-- ============================================================
+-- 1. 用户表
+-- ============================================================
+
+-- 存储注册用户信息，支持 PBKDF2 密码哈希和 JWT token 哈希的双因子认证
 CREATE TABLE IF NOT EXISTS users (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    username VARCHAR(64) UNIQUE NOT NULL,
-    password_hash VARCHAR(256) NOT NULL DEFAULT '',
-    token_hash VARCHAR(128) NOT NULL DEFAULT '',
-    display_name VARCHAR(128),
-    created_at TIMESTAMPTZ DEFAULT now()
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 用户唯一标识
+    username        VARCHAR(64) UNIQUE NOT NULL,                  -- 登录用户名（唯一）
+    password_hash   VARCHAR(256) NOT NULL DEFAULT '',             -- PBKDF2 密码哈希值（hex 编码）
+    token_hash      VARCHAR(128) NOT NULL DEFAULT '',             -- JWT token 哈希值（服务端校验用）
+    display_name    VARCHAR(128),                                 -- 显示名称（可选，用于前端展示）
+    created_at      TIMESTAMPTZ DEFAULT now()                     -- 注册时间
 );
 
--- 内置匿名用户
+-- 内置匿名用户，未登录时默认使用此 ID，避免外键约束报错
 INSERT INTO users (id, username, password_hash, token_hash, display_name)
 VALUES ('00000000-0000-0000-0000-000000000000', '__anonymous__', '', '', '匿名用户')
 ON CONFLICT (id) DO NOTHING;
 
--- 对话表
+-- ============================================================
+-- 2. 对话表
+-- ============================================================
+
+-- 每个会话一条记录，全部消息以 JSONB 数组存储，支持按 (用户, 会话) 快速定位
 CREATE TABLE IF NOT EXISTS conversations (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000' REFERENCES users(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,
-    messages JSONB NOT NULL DEFAULT '[]',
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 记录唯一标识
+    user_id         UUID NOT NULL REFERENCES users(id)           -- 所属用户（级联删除）
+                        ON DELETE CASCADE
+                        DEFAULT '00000000-0000-0000-0000-000000000000',
+    session_id      TEXT NOT NULL,                                -- 前端生成的会话 UUID
+    messages        JSONB NOT NULL DEFAULT '[]',                 -- 全部消息 [{role, content, timestamp}, ...]
+    created_at      TIMESTAMPTZ DEFAULT now(),                    -- 会话创建时间
+    updated_at      TIMESTAMPTZ DEFAULT now()                     -- 最后更新时间
 );
+
+-- 按 (用户, 会话) 唯一索引，保证每个用户的会话 ID 不重复
 CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_user_session ON conversations(user_id, session_id);
 
 -- ============================================================
--- v0.5: 知识库表（企业级升级）
+-- 3. 知识库表（v0.5 企业级升级）
 -- ============================================================
 
--- 文档主表（法律/司法解释/案例/法规）
+-- 3.1 文档主表
+-- 存储法律文档的元信息，一个「法律/司法解释/案例/地方法规」对应一条记录
+-- 支持版本管理和法律修订追踪（status 字段标记新旧版本）
 CREATE TABLE IF NOT EXISTS documents (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    doc_type VARCHAR(20) NOT NULL,      -- law|interpretation|case|regulation
-    title VARCHAR(500) NOT NULL,
-    source VARCHAR(500),
-    effective_date DATE,
-    version INT DEFAULT 1,
-    status VARCHAR(20) DEFAULT 'active', -- active|superseded|draft
-    superseded_by UUID REFERENCES documents(id),
-    original_filename VARCHAR(500),
-    created_at TIMESTAMPTZ DEFAULT now(),
-    updated_at TIMESTAMPTZ DEFAULT now()
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 文档唯一标识
+    doc_type        VARCHAR(20) NOT NULL,                        -- 文档类型: law(法律) | interpretation(司法解释)
+                                                                 --           case(案例) | regulation(地方法规)
+    title           VARCHAR(500) NOT NULL,                       -- 文档标题（如"中华人民共和国刑法"）
+    source          VARCHAR(500),                                -- 来源（如"全国人大"、"最高法"）
+    effective_date  DATE,                                        -- 生效日期
+    version         INT DEFAULT 1,                               -- 版本号（法律修订后递增）
+    status          VARCHAR(20) DEFAULT 'active',                -- 状态: active(生效中) | superseded(已被替代)
+                                                                 --       draft(草稿，未上线)
+    superseded_by   UUID REFERENCES documents(id),               -- 替代此版本的文档 ID（法律修订时关联新版本）
+    original_filename VARCHAR(500),                              -- 上传时的原始文件名（用于追溯）
+    created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
+    updated_at      TIMESTAMPTZ DEFAULT now()                     -- 最后更新时间
 );
+
+-- 按文档类型+状态查询，支持"只看生效中的法律"等过滤
 CREATE INDEX IF NOT EXISTS idx_docs_type_status ON documents(doc_type, status);
 
--- 文档块表（pgvector，统一用 halfvec 减少存储和计算量）
+-- 3.2 文档块表（向量索引核心表）
+-- 将文档按「条」切分后存入此表，每条都有独立的向量，支持语义检索
+-- 使用 halfvec（半精度浮点）将向量存储减半，检索速度提升约 30-40%
+-- embedding_model 列实现模型隔离，切换嵌入模型时无需全量重建旧数据
 CREATE TABLE IF NOT EXISTS document_chunks (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    doc_id UUID REFERENCES documents(id) ON DELETE CASCADE,
-    chunk_type VARCHAR(20) NOT NULL,     -- article|judgment|summary|guideline
-    content TEXT NOT NULL,
-    embedding_model VARCHAR(50) NOT NULL,
-    embedding HALFVEC(3072),              -- 按最大维度预留，halfvec 减半存储
-    metadata JSONB,
-    created_at TIMESTAMPTZ DEFAULT now()
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 块唯一标识
+    doc_id          UUID REFERENCES documents(id)                -- 所属文档（级联删除：删文档则块全删）
+                        ON DELETE CASCADE,
+    chunk_type      VARCHAR(20) NOT NULL,                        -- 块类型: article(法条) | judgment(判决要点)
+                                                                 --         summary(章级摘要，检索时过滤) | guideline(指导要点)
+    content         TEXT NOT NULL,                               -- 块的文本内容（以「条」为单位）
+    embedding_model VARCHAR(50) NOT NULL,                        -- 向量化模型标识（如 "bge-m3"、"ollama:bge-m3"）
+                                                                 -- 查询时 WHERE embedding_model = current 实现模型隔离
+    embedding       HALFVEC(3072),                               -- 文本向量（半精度，3072 维为业内最大模型预留）
+                                                                 -- 1024 维模型写入时 PG 自动补零适配
+    metadata        JSONB,                                       -- 结构化元数据:
+                                                                 --   {law_name, chapter, section, article_range, chunk_type}
+    created_at      TIMESTAMPTZ DEFAULT now()                     -- 写入时间
 );
--- HNSW 索引（检索速度优先）
+
+-- HNSW 索引：检索速度优先，10万+ 向量仍保持 <10ms
+-- m=16: 每节点最大 16 个邻居（平衡内存与速度）
+-- ef_construction=200: 建索引时搜索范围（值越大索引质量越高，建得越慢）
+-- halfvec_cosine_ops: 用半精度向量计算余弦相似度
 CREATE INDEX IF NOT EXISTS idx_chunks_embedding
     ON document_chunks USING hnsw (embedding halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 200);
+
+-- 按文档 ID 快速查找该文档的所有块（用于文档删除/状态切换）
 CREATE INDEX IF NOT EXISTS idx_chunks_doc ON document_chunks(doc_id);
+
+-- 按嵌入模型过滤（模型隔离 + 模型切换）
 CREATE INDEX IF NOT EXISTS idx_chunks_model ON document_chunks(embedding_model);
 
--- FAQ 语义缓存表
+-- ============================================================
+-- 4. FAQ 语义缓存表
+-- ============================================================
+
+-- 缓存高频问答，语义相似度 > 0.95 时直接返回缓存答案
+-- 节省 LLM 调用成本，降低响应延迟（缓存命中时 <100ms）
+-- TTL: 7 天自动过期；关联法律修订时级联失效
 CREATE TABLE IF NOT EXISTS faq_cache (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    question TEXT NOT NULL,
-    question_embed HALFVEC(3072),
-    answer TEXT NOT NULL,
-    sources JSONB,
-    related_laws TEXT[],
-    confidence FLOAT,
-    hit_count INT DEFAULT 1,
-    status VARCHAR(20) DEFAULT 'active',  -- active|expired|invalidated
-    created_at TIMESTAMPTZ DEFAULT now(),
-    expires_at TIMESTAMPTZ
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 缓存条目 ID
+    question        TEXT NOT NULL,                               -- 用户原始问题
+    question_embed  HALFVEC(3072),                               -- 问题向量（用于语义相似度匹配）
+    answer          TEXT NOT NULL,                               -- 缓存的完整答案
+    sources         JSONB,                                       -- 引用来源 [{law_name, article_range, score}, ...]
+    related_laws    TEXT[],                                      -- 关联法律 ID 列表（修法时级联失效）
+    confidence      FLOAT,                                       -- 回答置信度（低的缓存不写入）
+    hit_count       INT DEFAULT 1,                               -- 命中次数（用于淘汰低频缓存）
+    status          VARCHAR(20) DEFAULT 'active',                -- active(有效) | expired(TTL过期) | invalidated(修法失效)
+    created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
+    expires_at      TIMESTAMPTZ                                  -- 过期时间（创建时设为 now() + 7 days）
 );
+
+-- HNSW 索引：快速找到语义相似的已缓存问题
 CREATE INDEX IF NOT EXISTS idx_faq_embedding
     ON faq_cache USING hnsw (question_embed halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 200);
 
--- 对话记忆表
+-- ============================================================
+-- 5. 对话记忆表
+-- ============================================================
+
+-- 存储跨会话的对话摘要，实现"一个月前的对话还能想起来"
+-- 摘要由 LLM 在对话超过 6 轮时自动生成
+-- TTL: 30 天自动过期
 CREATE TABLE IF NOT EXISTS conversation_memories (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    user_id VARCHAR(128) NOT NULL,
-    session_id VARCHAR(128) NOT NULL,
-    summary TEXT,
-    summary_embed HALFVEC(3072),
-    entities JSONB,
-    message_count INT DEFAULT 0,
-    created_at TIMESTAMPTZ DEFAULT now(),
-    expires_at TIMESTAMPTZ DEFAULT (now() + INTERVAL '30 days')
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 记忆 ID
+    user_id         VARCHAR(128) NOT NULL,                       -- 所属用户
+    session_id      VARCHAR(128) NOT NULL,                       -- 原始会话 ID
+    summary         TEXT,                                        -- LLM 生成的对话摘要（结构化）
+    summary_embed   HALFVEC(3072),                               -- 摘要向量（用于语义检索历史对话）
+    entities        JSONB,                                       -- 关键实体: {case_type, laws_involved, key_facts, ...}
+    message_count   INT DEFAULT 0,                               -- 原始对话轮数
+    created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
+    expires_at      TIMESTAMPTZ DEFAULT (now() + INTERVAL '30 days')  -- 30 天后自动清除
 );
+
+-- 按用户快速查找所有历史记忆
 CREATE INDEX IF NOT EXISTS idx_memory_user ON conversation_memories(user_id);
+
+-- HNSW 索引：新问题时语义检索最相关的历史对话摘要
 CREATE INDEX IF NOT EXISTS idx_memory_embedding
     ON conversation_memories USING hnsw (summary_embed halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 200);
 
--- 检索质量日志表
+-- ============================================================
+-- 6. 检索质量日志表（可观测性）
+-- ============================================================
+
+-- 每次查询记录完整的性能指标和检索链路信息
+-- 用于：性能瓶颈分析 / 检索质量追踪 / 高频问题发现 / 成本核算
 CREATE TABLE IF NOT EXISTS query_logs (
-    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-    request_id UUID NOT NULL,
-    user_id VARCHAR(128),
-    query TEXT NOT NULL,
-    intent VARCHAR(20),
-    retrieved_count INT,
-    reranked_count INT,
-    faq_cache_hit BOOLEAN DEFAULT FALSE,
-    memory_docs_used INT DEFAULT 0,
-    llm_tokens_used INT,
-    total_latency_ms INT,
-    stage_timings JSONB,
-    created_at TIMESTAMPTZ DEFAULT now()
+    id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 日志 ID
+    request_id      UUID NOT NULL,                               -- 请求唯一标识（与 API 日志关联）
+    user_id         VARCHAR(128),                                -- 发起查询的用户
+    query           TEXT NOT NULL,                               -- 用户原始查询
+    intent          VARCHAR(20),                                 -- 意图分类: law_lookup | case_query | casual | other
+    retrieved_count INT,                                         -- 粗排召回数（检索后、精排前）
+    reranked_count  INT,                                         -- 精排后返回数
+    faq_cache_hit   BOOLEAN DEFAULT FALSE,                       -- 是否命中 FAQ 缓存
+    memory_docs_used INT DEFAULT 0,                              -- 本次查询使用的记忆文档数
+    llm_tokens_used INT,                                         -- LLM 消耗的 token 总数（输入+输出）
+    total_latency_ms INT,                                        -- 总耗时（毫秒）
+    stage_timings   JSONB,                                       -- 各阶段耗时:
+                                                                 --   {intent_ms, memory_ms, rewrite_ms, retrieve_ms,
+                                                                 --    rerank_ms, generate_ms}
+    created_at      TIMESTAMPTZ DEFAULT now()                     -- 记录时间
 );
