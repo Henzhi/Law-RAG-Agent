@@ -1,0 +1,81 @@
+"""
+Ollama Embedding 后端实现。
+
+通过 ollama Python SDK 调用本地 Ollama 服务的 Embedding API。
+实现 LangChain Embeddings 兼容接口，可直接用于 FAISS / LangChain。
+"""
+from __future__ import annotations
+
+import logging
+from typing import List
+
+import ollama
+from langchain_core.embeddings import Embeddings
+
+from src.embedding.base import EmbeddingBackend
+
+logger = logging.getLogger(__name__)
+
+
+class OllamaEmbedder(EmbeddingBackend):
+    """Ollama Embedding 后端
+
+    用法:
+        embedder = OllamaEmbedder(model="bge-m3", base_url="http://localhost:11434")
+        vec = embedder.embed_query("中华人民共和国刑法")
+        vecs = embedder.embed(["文本1", "文本2"])
+    """
+
+    def __init__(
+        self,
+        model: str = "bge-m3",
+        base_url: str = "http://localhost:11434",
+        batch_size: int = 32,
+        max_retries: int = 3,
+        retry_delay: float = 2.0,
+    ):
+        super().__init__(
+            model=model,
+            batch_size=batch_size,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+        )
+        self.base_url = base_url
+        self._client = self._init_client()
+
+    def _init_client(self) -> ollama.Client:
+        host = self.base_url.replace("http://", "").replace("https://", "")
+        return ollama.Client(host=host, timeout=300.0)
+
+    def get_model_name(self) -> str:
+        return f"ollama:{self.model}"
+
+    def get_dimension(self) -> int:
+        return len(self.embed_query("test"))
+
+    # ------------------------------------------------------------------
+    # EmbeddingBackend 抽象方法实现
+    # ------------------------------------------------------------------
+
+    def _embed_batch_impl(self, texts: List[str]) -> List[List[float]]:
+        response = self._client.embed(
+            model=self.model,
+            input=texts,
+        )
+        return response["embeddings"]
+
+
+class OllamaLangChainEmbedder(Embeddings):
+    """将 OllamaEmbedder 包装为 LangChain Embeddings 接口
+
+    使 Ollama Embedding 后端可以无缝用于 LangChain FAISS 向量库。
+    """
+
+    def __init__(self, backend: OllamaEmbedder):
+        self._backend = backend
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        return self._backend.embed(texts)
+
+    def embed_query(self, text: str) -> List[float]:
+        return self._backend.embed_query(text)
