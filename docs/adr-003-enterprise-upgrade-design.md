@@ -11,6 +11,7 @@
 > | 07-23 | 1a | LLM 后端抽象层 — base.py / ollama_backend.py / openai_backend.py / factory.py + 19 测试 ✅ |
 > | 07-23 | 1b | Embedding 后端抽象层 — base.py / ollama_embedder.py / openai_embedder.py / factory.py + 24 测试 ✅ |
 | 07-23 | 1c | config.py 统一配置 + adapter 适配器 + dependencies.py 接入 ✅ |
+| 07-23 | 1d | 全面审查修复 — Bug1: 历史消息LLMMessage兼容 + Bug2: 注释过期 + 6新测试 ✅ |
 
 ---
 
@@ -818,3 +819,19 @@ dependencies = [
 - `src/rag/retriever.py` (FAISS 检索器) → 重写为 pgvector 检索器
 - `data/vector_store/` (FAISS 索引文件) → 数据迁移到 pgvector
 - `scripts/build_index.py` → 替换为 `src/knowledge/ingestion/pipeline.py`
+
+---
+
+## 11. 步骤 1 审查记录 (2026-07-23)
+
+| # | 发现 | 严重 | 修复 |
+|---|------|------|------|
+| 1 | `LLMAdapter` 不处理 `LLMMessage` 对象，`graph.py`/`engine.py` 传历史会 `AttributeError` | 🔴致命 | `_normalize_history()` 转换 + 6 测试 |
+| 2 | `dependencies._create_embedder()` 注释写"回退到 LLM_BACKEND" | 🟢轻微 | 修正为"独立于 LLM_BACKEND" |
+| 3 | `LawAgentGraph` 类型标注 `llm: LawLLM` 过时 | 🟡中等 | 运行时无影响，Phase2 重构修正 |
+
+**审查通过项**：
+- 无循环导入
+- LLM/Embedding 后端独立选型正确
+- `.env` 在 `.gitignore` 中
+- 旧代码零破坏性变更

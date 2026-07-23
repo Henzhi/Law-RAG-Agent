@@ -8,10 +8,29 @@ LLM / Embedding 后端适配器。
 """
 from __future__ import annotations
 
-from typing import Iterator, List
+from typing import Any, Iterator, List
 
 from src.llm.base import LLMBackend
 from src.embedding.base import EmbeddingBackend
+
+
+def _normalize_history(history: list[Any] | None) -> list[dict[str, str]] | None:
+    """将旧 LLMMessage 对象列表转换为 dict 列表，兼容新后端。
+
+    旧的 LawLLM 和 graph.py 使用 LLMMessage(role, content) 对象，
+    新的 LLMBackend._build_messages() 期望 {"role": ..., "content": ...} dict。
+    """
+    if history is None:
+        return None
+    result = []
+    for msg in history:
+        if hasattr(msg, "role") and hasattr(msg, "content"):
+            result.append({"role": str(msg.role), "content": str(msg.content)})
+        elif isinstance(msg, dict):
+            result.append(msg)
+        else:
+            result.append({"role": "user", "content": str(msg)})
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -28,6 +47,7 @@ class LLMAdapter:
     def __init__(self, backend: LLMBackend):
         self._backend = backend
         self.model_name = backend.model
+        self.temperature = backend.temperature
 
     # ----- 基础 API -----
 
@@ -37,7 +57,11 @@ class LLMAdapter:
         history: list | None = None,
         system_prompt: str | None = None,
     ) -> str:
-        return self._backend.chat(user_message, history, system_prompt)
+        return self._backend.chat(
+            user_message,
+            history=_normalize_history(history),
+            system_prompt=system_prompt,
+        )
 
     def chat_stream(
         self,
@@ -45,7 +69,11 @@ class LLMAdapter:
         history: list | None = None,
         system_prompt: str | None = None,
     ) -> Iterator[str]:
-        yield from self._backend.chat_stream(user_message, history, system_prompt)
+        yield from self._backend.chat_stream(
+            user_message,
+            history=_normalize_history(history),
+            system_prompt=system_prompt,
+        )
 
     # ----- RAG 上下文 API（兼容旧 LawLLM）-----
 

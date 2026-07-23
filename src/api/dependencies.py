@@ -60,7 +60,7 @@ def get_llm():
 def _create_embedder():
     """根据配置创建 Embedding 实例（通过适配器兼容旧 API）
 
-    根据 EMBED_BACKEND（回退到 LLM_BACKEND）自动选择后端。
+    根据 EMBED_BACKEND 环境变量自动选择后端（默认 ollama，独立于 LLM_BACKEND）。
     """
     backend = create_embedding_backend(
         backend_type=None,  # 自动从环境变量读取

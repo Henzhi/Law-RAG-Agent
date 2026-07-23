@@ -184,3 +184,87 @@ class TestBaseClass:
         assert "正当防卫" in prompt
         assert "刑法" in prompt
         assert "相关法律条文" in prompt
+
+
+class TestAdapterHistoryNormalization:
+    """验证适配器能正确处理旧 LLMMessage 对象"""
+
+    def test_normalize_llmmessage_list(self):
+        from src.llm.adapter import _normalize_history
+        from src.llm.client import Message as LLMMessage
+
+        history = [
+            LLMMessage("user", "你好"),
+            LLMMessage("assistant", "你好，请问有什么法律问题？"),
+        ]
+        result = _normalize_history(history)
+        assert result == [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好，请问有什么法律问题？"},
+        ]
+
+    def test_normalize_dict_list_passthrough(self):
+        from src.llm.adapter import _normalize_history
+
+        history = [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好"},
+        ]
+        result = _normalize_history(history)
+        assert result == history  # dict 原样通过
+
+    def test_normalize_none(self):
+        from src.llm.adapter import _normalize_history
+
+        assert _normalize_history(None) is None
+
+    def test_normalize_mixed_list(self):
+        from src.llm.adapter import _normalize_history
+        from src.llm.client import Message as LLMMessage
+
+        history = [
+            LLMMessage("user", "问题"),
+            {"role": "assistant", "content": "回答"},
+        ]
+        result = _normalize_history(history)
+        assert result == [
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "回答"},
+        ]
+
+    def test_normalize_plain_string_fallback(self):
+        # 纯字符串（不应该出现但防御性处理）
+        from src.llm.adapter import _normalize_history
+
+        history = ["你好"]
+        result = _normalize_history(history)
+        assert result == [{"role": "user", "content": "你好"}]
+
+    def test_adapter_passes_normalized_history(self):
+        """端到端：适配器收到 LLMMessage 历史 → 后端收到 dict"""
+        from src.llm.adapter import LLMAdapter, _normalize_history
+        from src.llm.client import Message as LLMMessage
+
+        # 用一个最小可调用的假后端
+        class FakeBackend:
+            model = "fake"
+            temperature = 0.1
+            def chat(self, user_message, history=None, system_prompt=None):
+                self._last_history = history
+                return "ok"
+            def chat_stream(self, user_message, history=None, system_prompt=None):
+                self._last_history = history
+                yield "ok"
+            def get_context_window(self):
+                return 1000
+            def _build_rag_prompt(self, q, ctx):
+                return f"RAG: {q}"
+
+        backend = FakeBackend()
+        adapter = LLMAdapter(backend)
+
+        # 用旧 LLMMessage 对象
+        history = [LLMMessage("user", "之前的问题")]
+        adapter.chat("新问题", history=history)
+        # 验证后端收到的是 dict 格式
+        assert backend._last_history == [{"role": "user", "content": "之前的问题"}]
