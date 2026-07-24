@@ -1,21 +1,20 @@
 """
-LangGraph 多 Agent 工作流。
+LangGraph 多 Agent 工作流 (v0.5)。
 
 流程:
-    意图识别 → 闲聊? → 直接回复
-              → 法律? → 查询改写 → 检索 → 生成回答 → 答案校验
-                                                  ↑              │
-                                                  └── 不通过 ────┘
+    intent → memory_retrieve → rewrite → retrieve → generate → validate
+                ↑ 新增节点                                    ↓
+                └── 检索历史对话摘要                          ├─ PASS → END
+                                                            └─ FAIL → generate (重试)
 """
 from __future__ import annotations
 
 import logging
-from typing import TypedDict, Annotated, Iterator
+from typing import TypedDict, Annotated, Iterator, Optional
 
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
-from src.llm.client import LawLLM, Message as LLMMessage
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
 
@@ -36,6 +35,8 @@ class AgentState(TypedDict):
     validation_feedback: str        # 校验失败时的反馈信息
     retry_count: int                # 重试次数
     is_legal_query: bool            # 意图识别：是否法律问题
+    memory_context: str             # 历史对话记忆上下文
+    user_id: str                    # 用户 ID（用于记忆检索）
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +155,9 @@ def _msg_content(m) -> str:
 # ---------------------------------------------------------------------------
 
 class LawAgentGraph:
-    """LangGraph 多 Agent 法律问答引擎
+    """LangGraph 多 Agent 法律问答引擎 (v0.5)
+
+    新增 memory_retrieve 节点，在改写查询前检索用户历史对话记忆。
 
     用法:
         agent = LawAgentGraph(retriever, llm)
@@ -165,14 +168,16 @@ class LawAgentGraph:
     def __init__(
         self,
         retriever: BaseRetriever,
-        llm: LawLLM,
+        llm,                    # LLMAdapter
         top_k: int = 5,
         max_retries: int = 1,
+        memory_manager = None,  # ConversationMemoryManager | None
     ):
         self.retriever = retriever
         self.llm = llm
         self.top_k = top_k
         self.max_retries = max_retries
+        self._memory = memory_manager
         self._graph = self._build_graph()
 
     # ------------------------------------------------------------------
@@ -184,6 +189,7 @@ class LawAgentGraph:
 
         builder.add_node("intent", self._classify_intent)
         builder.add_node("casual_reply", self._casual_reply)
+        builder.add_node("memory_retrieve", self._memory_retrieve)
         builder.add_node("rewrite", self._rewrite_query)
         builder.add_node("retrieve", self._retrieve)
         builder.add_node("generate", self._generate)
@@ -193,10 +199,11 @@ class LawAgentGraph:
         # 意图 → 闲聊 / 法律
         builder.add_conditional_edges(
             "intent", self._route_by_intent,
-            {"legal": "rewrite", "casual": "casual_reply"},
+            {"legal": "memory_retrieve", "casual": "casual_reply"},  # 法律先查记忆
         )
         builder.add_edge("casual_reply", END)
-        # 法律路径
+        # 法律路径: memory → rewrite → retrieve → generate → validate
+        builder.add_edge("memory_retrieve", "rewrite")
         builder.add_edge("rewrite", "retrieve")
         builder.add_edge("retrieve", "generate")
         builder.add_conditional_edges(
@@ -221,6 +228,25 @@ class LawAgentGraph:
     def _route_by_intent(self, state: AgentState) -> str:
         """根据意图路由到不同分支"""
         return "legal" if state.get("is_legal_query", True) else "casual"
+
+    def _memory_retrieve(self, state: AgentState) -> dict:
+        """记忆检索节点：查找用户历史对话中与当前问题相关的内容"""
+        if self._memory is None:
+            return {"memory_context": ""}
+
+        user_id = state.get("user_id", "")
+        if not user_id:
+            return {"memory_context": ""}
+
+        try:
+            memories = self._memory.retrieve(user_id, state["query"])
+            context = self._memory.build_context(memories)
+            if context:
+                logger.info(f"记忆命中: user={user_id[:8]}..., {len(memories)}条")
+            return {"memory_context": context}
+        except Exception as e:
+            logger.warning(f"记忆检索失败: {e}")
+            return {"memory_context": ""}
 
     def _casual_reply(self, state: AgentState) -> dict:
         """闲聊直接回复，不走检索"""
@@ -266,8 +292,13 @@ class LawAgentGraph:
         docs = state.get("retrieved_docs", [])
         query = state.get("rewritten_query", state["query"])
         feedback = state.get("validation_feedback", "")
+        memory_context = state.get("memory_context", "")
 
         ctx = _build_hierarchical_context(docs)
+
+        # 记忆上下文放在法条前面
+        if memory_context:
+            ctx = memory_context + "\n\n" + ctx
 
         # 重试时追加质量提醒
         extra = ""
@@ -276,7 +307,8 @@ class LawAgentGraph:
 
         prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query) + extra
 
-        # 附加历史（兼容 LangChain Message 和 dict）
+        # 附加当前会话历史
+        from src.llm.client import Message as LLMMessage
         history = []
         for m in state.get("messages", [])[-6:]:
             role = _msg_role(m)
@@ -331,7 +363,7 @@ class LawAgentGraph:
     # 公开接口
     # ------------------------------------------------------------------
 
-    def ask(self, query: str, history: list[dict] | None = None) -> dict:
+    def ask(self, query: str, history: list[dict] | None = None, user_id: str = "") -> dict:
         """同步问答，返回完整 state"""
         initial = {
             "query": query,
@@ -343,11 +375,13 @@ class LawAgentGraph:
             "validation_feedback": "",
             "retry_count": 0,
             "is_legal_query": True,
+            "memory_context": "",
+            "user_id": user_id,
         }
         result = self._graph.invoke(initial)
         return result
 
-    def stream(self, query: str, history: list[dict] | None = None) -> Iterator[dict]:
+    def stream(self, query: str, history: list[dict] | None = None, user_id: str = "") -> Iterator[dict]:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
         yield {"type": "thinking", "content": "🔧 正在初始化 Agent..."}
 
@@ -366,14 +400,27 @@ class LawAgentGraph:
             "query": query, "messages": history or [], "rewritten_query": "",
             "retrieved_docs": [], "answer": "", "validation_passed": False,
             "retry_count": 0, "validation_feedback": "", "is_legal_query": True,
+            "memory_context": "", "user_id": user_id,
         }
+
+        # 2. 记忆检索（新增）
+        if self._memory and user_id:
+            yield {"type": "thinking", "content": "🧠 检索历史记忆..."}
+            try:
+                memories = self._memory.retrieve(user_id, query)
+                ctx = self._memory.build_context(memories)
+                if ctx:
+                    state["memory_context"] = ctx
+                    yield {"type": "thinking", "content": f"🧠 找到 {len(memories)} 条相关历史记忆"}
+            except Exception as e:
+                logger.warning(f"流式: 记忆检索失败: {e}")
 
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
                 yield {"type": "clear", "content": ""}
                 yield {"type": "thinking", "content": f"--- 第 {attempt + 1} 次尝试 ---"}
 
-            # 1. Rewrite
+            # 3. Rewrite
             yield {"type": "thinking", "content": "⏳ 正在理解问题..."}
             state.update(self._rewrite_query(state))
             rw = state.get("rewritten_query", query)
@@ -382,7 +429,7 @@ class LawAgentGraph:
             else:
                 yield {"type": "thinking", "content": "📝 使用原始查询"}
 
-            # 2. Retrieve
+            # 4. Retrieve
             yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
             state.update(self._retrieve(state))
             docs = state.get("retrieved_docs", [])
@@ -393,12 +440,16 @@ class LawAgentGraph:
             sources = [{"law_name": d.get("law_name", ""), "citation": d.get("citation", ""), "score": 0.0} for d in docs]
             yield {"type": "meta", "sources": sources, "is_casual": False, "rewritten": rw}
 
-            # 3. Generate — LLM 直接流式输出回答
+            # 5. Generate — 记忆上下文注入 Prompt
             yield {"type": "thinking", "content": "💭 模型正在思考..."}
             fb = state.get("validation_feedback", "")
+            memory_ctx = state.get("memory_context", "")
             ctx = _build_hierarchical_context(docs)
+            if memory_ctx:
+                ctx = memory_ctx + "\n\n" + ctx
             extra = f"\n\n## ⚠️ 上次回答不合格\n原因: {fb}\n请确保本次回答: 引用法律名称、标注条款号、不编造内容。" if fb else ""
             prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=rw) + extra
+            from src.llm.client import Message as LLMMessage
             hist = []
             for m in state.get("messages", [])[-6:]:
                 r = _msg_role(m); c = _msg_content(m)[:300]
@@ -411,7 +462,7 @@ class LawAgentGraph:
                 answer_raw += token
             state["answer"] = answer_raw.strip() or "(未能生成回答)"
 
-            # 4. Validate（需要完整答案，在流式输出之后进行）
+            # 6. Validate
             yield {"type": "thinking", "content": "🔎 审核回答质量..."}
             state.update(self._validate(state))
             if state.get("validation_passed", True):

@@ -144,8 +144,23 @@ def get_engine() -> RAGEngine:
     return _engine
 
 
+def _create_memory_manager(llm, embedder):
+    """创建对话记忆管理器（需要 pgvector 环境）"""
+    if not PG_ENABLED:
+        return None
+    try:
+        from src.knowledge.pgvector_store import PgvectorStore
+        from src.memory.conversation import ConversationMemoryManager
+        store = PgvectorStore(PG_CONN)
+        store.ensure_tables()
+        return ConversationMemoryManager(store=store, embedder=embedder, llm=llm)
+    except Exception as e:
+        logger.warning(f"记忆管理器初始化失败（pgvector 未就绪？）: {e}")
+        return None
+
+
 def get_agent(force_reload: bool = False) -> LawAgentGraph:
-    """获取 LangGraph 多 Agent 引擎"""
+    """获取 LangGraph 多 Agent 引擎（含记忆管理器）"""
     global _agent
     if force_reload:
         _agent = None
@@ -153,6 +168,11 @@ def get_agent(force_reload: bool = False) -> LawAgentGraph:
         llm = get_llm()
         embedder = _create_embedder()
         retriever = _create_retriever(embedder)
-        _agent = LawAgentGraph(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K, max_retries=AGENT_MAX_RETRIES)
-        logger.info("LangGraph Agent 就绪")
+        memory_mgr = _create_memory_manager(llm, embedder)
+        _agent = LawAgentGraph(
+            retriever=retriever, llm=llm,
+            top_k=RETRIEVAL_TOP_K, max_retries=AGENT_MAX_RETRIES,
+            memory_manager=memory_mgr,
+        )
+        logger.info(f"LangGraph Agent 就绪 (记忆={'启用' if memory_mgr else '未启用'})")
     return _agent

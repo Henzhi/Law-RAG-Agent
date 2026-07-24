@@ -13,7 +13,8 @@
 | 07-23 | 1c | config.py 统一配置 + adapter 适配器 + dependencies.py 接入 ✅ |
 | 07-23 | 1d | 全面审查修复 — Bug1: LLMMessage兼容 + Bug2: 注释过期 + 6测试 ✅ |
 | 07-23 | 1e | 二次审查 — Bug3: base_url污染(Ollama URL误入OpenAI后端) 已修复 ✅ |
-| 07-23 | 2  | pgvector 完全替代 FAISS — 进行中 |
+| 07-24 | 2  | pgvector 完全替代 FAISS ✅ |
+| 07-24 | 3  | 对话记忆层 — ConversationMemoryManager + memory_retrieve 节点 + 12 测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
 
 ---
