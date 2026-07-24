@@ -295,6 +295,23 @@ def _dicts_to_retrieved(docs: list[dict]) -> list:
 # ---------------------------------------------------------------------------
 # 4. 知识库 — 文档上传
 # ---------------------------------------------------------------------------
+# 解析管道单例（任务状态跨请求共享）
+_ingestion_pipeline: object | None = None
+
+
+def _get_ingestion_pipeline():
+    """获取解析管道单例"""
+    global _ingestion_pipeline
+    if _ingestion_pipeline is None:
+        embedder = _create_embedder()
+        from src.knowledge.pgvector_store import PgvectorStore
+        from src.config import PG_CONN as _pg_conn
+        store = PgvectorStore(_pg_conn)
+        store.ensure_tables()
+        from src.knowledge.ingestion.pipeline import IngestionPipeline
+        _ingestion_pipeline = IngestionPipeline(store, embedder)
+    return _ingestion_pipeline
+
 
 @router.post("/knowledge/upload")
 async def upload_document(
@@ -309,8 +326,7 @@ async def upload_document(
     返回 task_id 用于查询处理进度。
     """
     import tempfile
-    from src.knowledge.ingestion.pipeline import IngestionPipeline
-    from src.api.dependencies import get_agent
+    import asyncio
 
     # 验证文件扩展名
     ext = Path(file.filename or "").suffix.lower()
@@ -330,13 +346,8 @@ async def upload_document(
         tmp.write(content)
         tmp_path = tmp.name
 
-    # 创建解析管道并提交任务
-    embedder = _create_embedder()
-    from src.knowledge.pgvector_store import PgvectorStore
-    from src.config import PG_CONN as _pg_conn
-    store = PgvectorStore(_pg_conn)
-    store.ensure_tables()
-    pipeline = IngestionPipeline(store, embedder)
+    # 提交解析任务
+    pipeline = _get_ingestion_pipeline()
     task_id = pipeline.submit(
         file_path=tmp_path,
         doc_type=doc_type,
@@ -344,8 +355,7 @@ async def upload_document(
         effective_date=effective_date or None,
     )
 
-    # 异步处理（后台任务）
-    import asyncio
+    # 后台异步处理
     asyncio.create_task(_run_ingestion(pipeline, task_id, tmp_path))
 
     return {
@@ -375,13 +385,7 @@ async def _run_ingestion(pipeline, task_id: str, tmp_path: str):
 @router.get("/knowledge/status/{task_id}")
 async def get_ingestion_status(task_id: str):
     """查询文档解析任务状态"""
-    embedder = _create_embedder()
-    from src.knowledge.pgvector_store import PgvectorStore
-    from src.config import PG_CONN as _pg_conn
-    store = PgvectorStore(_pg_conn)
-    store.ensure_tables()
-    from src.knowledge.ingestion.pipeline import IngestionPipeline
-    pipeline = IngestionPipeline(store, embedder)
+    pipeline = _get_ingestion_pipeline()
     status = pipeline.get_status(task_id)
     if status is None:
         raise HTTPException(404, "任务不存在")

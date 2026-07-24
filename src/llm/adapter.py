@@ -114,6 +114,7 @@ class EmbeddingAdapter:
     def __init__(self, backend: EmbeddingBackend):
         self._backend = backend
         self.model = backend.model
+        self.batch_size = backend.batch_size
 
     # ----- 旧 API -----
 
