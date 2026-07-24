@@ -45,12 +45,14 @@ class LawAgentGraph:
         top_k: int = 5,
         max_retries: int = 1,
         memory_manager = None,  # ConversationMemoryManager | None
+        faq_cache = None,       # FAQCache | None
     ):
         self.retriever = retriever
         self.llm = llm
         self.top_k = top_k
         self.max_retries = max_retries
         self._memory = memory_manager
+        self._faq_cache = faq_cache
 
         # 通过工厂函数注入依赖，节点本身无状态
         nodes = make_nodes(llm, retriever, memory_manager, top_k, max_retries)
@@ -120,6 +122,24 @@ class LawAgentGraph:
 
         if not is_legal:
             yield {"type": "thinking", "content": "📝 直接回复，无需检索"}
+            for token in self.llm.chat_stream(query):
+                yield {"type": "token", "content": token}
+            yield {"type": "thinking", "content": "✅ 完成"}
+            return
+
+        # 2. FAQ 缓存检查
+        if self._faq_cache:
+            yield {"type": "thinking", "content": "⚡ 检查 FAQ 缓存..."}
+            try:
+                cached = self._faq_cache.check(query)
+                if cached:
+                    yield {"type": "FAQ", "content": f"⚡ FAQ 缓存命中 (相似度: {cached['score']:.3f})"}
+                    yield {"type": "token", "content": cached["answer"]}
+                    yield {"type": "meta", "sources": cached.get("sources", []), "is_casual": False, "cache_hit": True}
+                    yield {"type": "thinking", "content": "✅ 完成（来自缓存）"}
+                    return
+            except Exception as e:
+                logger.warning(f"FAQ缓存检查失败: {e}")
             for token in self.llm.chat_stream(query):
                 yield {"type": "token", "content": token}
             yield {"type": "thinking", "content": "✅ 完成"}
@@ -196,6 +216,19 @@ class LawAgentGraph:
             state.update(self._nodes["validate"](state))
             if state.get("validation_passed", True):
                 yield {"type": "thinking", "content": "✅ 审核通过"}
+                # 校验通过 → 存入 FAQ 缓存
+                if self._faq_cache:
+                    try:
+                        related_laws = list(set(d.get("law_name", "") for d in docs if d.get("law_name")))
+                        self._faq_cache.store(
+                            question=query,
+                            answer=state["answer"],
+                            sources=sources,
+                            related_laws=related_laws,
+                            confidence=0.9,
+                        )
+                    except Exception as e:
+                        logger.warning(f"FAQ缓存写入失败: {e}")
                 break
             fb = state.get("validation_feedback", "")
             yield {"type": "thinking", "content": f"❌ 未通过{f': {fb}' if fb else ''}，重新生成..."}

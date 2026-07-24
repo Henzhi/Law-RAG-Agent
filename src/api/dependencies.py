@@ -157,8 +157,20 @@ def _create_memory_manager(llm, embedder):
         return None
 
 
+def _create_faq_cache(embedder):
+    """创建 FAQ 语义缓存管理器（需要 pgvector 环境）"""
+    if not PG_ENABLED:
+        return None
+    try:
+        from src.memory.faq_cache import FAQCache
+        return FAQCache(conn_string=PG_CONN, embedder=embedder)
+    except Exception as e:
+        logger.warning(f"FAQ缓存初始化失败（pgvector 未就绪？）: {e}")
+        return None
+
+
 def get_agent(force_reload: bool = False) -> LawAgentGraph:
-    """获取 LangGraph 多 Agent 引擎（含记忆管理器）"""
+    """获取 LangGraph 多 Agent 引擎（含记忆管理器 + FAQ 缓存）"""
     global _agent
     if force_reload:
         _agent = None
@@ -167,10 +179,17 @@ def get_agent(force_reload: bool = False) -> LawAgentGraph:
         embedder = _create_embedder()
         retriever = _create_retriever(embedder)
         memory_mgr = _create_memory_manager(llm, embedder)
+        faq_cache = _create_faq_cache(embedder)
         _agent = LawAgentGraph(
             retriever=retriever, llm=llm,
             top_k=RETRIEVAL_TOP_K, max_retries=AGENT_MAX_RETRIES,
             memory_manager=memory_mgr,
+            faq_cache=faq_cache,
         )
-        logger.info(f"LangGraph Agent 就绪 (记忆={'启用' if memory_mgr else '未启用'})")
+        extras = []
+        if memory_mgr:
+            extras.append("记忆")
+        if faq_cache:
+            extras.append("FAQ缓存")
+        logger.info(f"LangGraph Agent 就绪 ({'/'.join(extras) if extras else '基础模式'})")
     return _agent
