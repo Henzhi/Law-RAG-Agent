@@ -20,7 +20,7 @@ from typing import Iterator
 from langgraph.graph import StateGraph, END
 
 from src.agents.state import AgentState
-from src.agents.nodes import make_nodes, build_hierarchical_context
+from src.agents.nodes import make_nodes, build_hierarchical_context, _msg_role, _msg_content
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
 from src.rag.intent import classify_intent
@@ -197,28 +197,10 @@ class LawAgentGraph:
             if state.get("validation_passed", True):
                 yield {"type": "thinking", "content": "✅ 审核通过"}
                 break
-            yield {"type": "thinking", "content": "❌ 未通过，重新生成..."}
-            state["validation_feedback"] = "回答未引用法律名称或条款号"
+            fb = state.get("validation_feedback", "")
+            yield {"type": "thinking", "content": f"❌ 未通过{f': {fb}' if fb else ''}，重新生成..."}
 
         yield {"type": "thinking", "content": "✅ 全部完成"}
 
 
-# ---------------------------------------------------------------------------
-# 消息工具（graph 内部使用）
-# ---------------------------------------------------------------------------
-
-def _msg_role(m) -> str:
-    if hasattr(m, "type"):
-        type_map = {"human": "user", "ai": "assistant", "system": "system"}
-        return type_map.get(m.type, m.type or "user")
-    if isinstance(m, dict):
-        return m.get("role", "user")
-    return "user"
-
-
-def _msg_content(m) -> str:
-    if hasattr(m, "content"):
-        return str(m.content) if m.content else ""
-    if isinstance(m, dict):
-        return str(m.get("content", ""))
-    return str(m)
+# _msg_role / _msg_content 统一从 nodes 模块导入（单一来源，见文件顶部 import）

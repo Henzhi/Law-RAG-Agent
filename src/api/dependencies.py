@@ -149,11 +149,8 @@ def _create_memory_manager(llm, embedder):
     if not PG_ENABLED:
         return None
     try:
-        from src.knowledge.pgvector_store import PgvectorStore
         from src.memory.conversation import ConversationMemoryManager
-        store = PgvectorStore(PG_CONN)
-        store.ensure_tables()
-        return ConversationMemoryManager(store=store, embedder=embedder, llm=llm)
+        return ConversationMemoryManager(conn_string=PG_CONN, embedder=embedder, llm=llm)
     except Exception as e:
         logger.warning(f"记忆管理器初始化失败（pgvector 未就绪？）: {e}")
         return None

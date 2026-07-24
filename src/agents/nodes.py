@@ -12,6 +12,7 @@ from src.agents.state import AgentState
 from src.agents.prompts import REWRITE_PROMPT, VALIDATOR_PROMPT
 from src.rag.intent import classify_intent
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
+from src.llm.client import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,6 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
         prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query) + extra
 
         # 附加当前会话历史
-        from src.llm.client import Message as LLMMessage
         history = []
         for m in state.get("messages", [])[-6:]:
             role = _msg_role(m)

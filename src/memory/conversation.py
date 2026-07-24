@@ -17,7 +17,8 @@ from __future__ import annotations
 import logging
 from typing import List
 
-from src.knowledge.pgvector_store import PgvectorStore
+import psycopg2
+from pgvector.psycopg2 import register_vector
 
 logger = logging.getLogger(__name__)
 
@@ -46,21 +47,38 @@ TIME_DECAY_DAYS = 7  # 7 天内的记忆权重不变，之后线性衰减
 class ConversationMemoryManager:
     """对话记忆管理器
 
-    Attributes:
-        _store: pgvector 存储实例
-        _embedder: Embedding 适配器
-        _llm: LLM 适配器（用于生成摘要）
+    独立管理自己的 PG 连接，不依赖 PgvectorStore 的内部实现。
     """
 
     def __init__(
         self,
-        store: PgvectorStore,
+        conn_string: str,
         embedder,   # EmbeddingAdapter
         llm,        # LLMAdapter
     ):
-        self._store = store
         self._embedder = embedder
         self._llm = llm
+        self._conn = psycopg2.connect(conn_string)
+        register_vector(self._conn)
+
+    def _ensure_connection(self):
+        """检查连接是否存活，断开则自动重连"""
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception:
+            logger.warning("记忆管理器: PG 连接已断开，尝试重连...")
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = psycopg2.connect(self._conn.dsn)
+            register_vector(self._conn)
+            logger.info("记忆管理器: PG 重连成功")
+
+    def close(self):
+        """关闭数据库连接"""
+        self._conn.close()
 
     # ------------------------------------------------------------------
     # 记忆写入
@@ -97,8 +115,9 @@ class ConversationMemoryManager:
         # 拼对话文本
         conv_text = self._format_conversation(messages)
 
-        # LLM 生成摘要
-        summary = self._llm.chat(conv_text, system_prompt=_SUMMARY_PROMPT)
+        # LLM 生成摘要（格式化对话内容到 system prompt 中）
+        formatted_prompt = _SUMMARY_PROMPT.format(conversation=conv_text)
+        summary = self._llm.chat("请按照系统提示的格式生成摘要。", system_prompt=formatted_prompt)
 
         # 解析实体
         entities = self._parse_entities(summary)
@@ -107,8 +126,8 @@ class ConversationMemoryManager:
         summary_vec = self._embedder.embed_query(summary)
 
         # 写入 pgvector
-        self._store._ensure_connection()
-        with self._store._conn.cursor() as cur:
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO conversation_memories "
                 "(user_id, session_id, summary, summary_embed, entities, message_count) "
@@ -122,7 +141,7 @@ class ConversationMemoryManager:
                     len(messages),
                 ),
             )
-        self._store._conn.commit()
+        self._conn.commit()
         logger.info(f"对话记忆已保存: user={user_id[:8]}..., session={session_id[:8]}..., msg_count={len(messages)}")
         return summary
 
@@ -147,8 +166,8 @@ class ConversationMemoryManager:
         """
         query_vec = self._embedder.embed_query(query)
 
-        self._store._ensure_connection()
-        with self._store._conn.cursor() as cur:
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
             cur.execute(
                 "SELECT summary, entities, message_count, created_at, "
                 "1 - (summary_embed <=> %s::halfvec) AS score "

@@ -16,6 +16,7 @@
 | 07-24 | 2  | pgvector 完全替代 FAISS ✅ |
 | 07-24 | 3  | 对话记忆层 — ConversationMemoryManager + memory_retrieve 节点 + 12 测试 ✅ |
 | 07-24 | 3b | 软件工程重构 — graph.py 拆分为 state/prompts/nodes/graph 四文件 ✅ |
+| 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
 
 ---
@@ -929,3 +930,117 @@ tests/test_config_safety.py:
 | 全部 | 227 | 0 (仅修复，未新增测试) | 227 |
 
 > 注：本次审查为代码级修复，安全测试用例建议在步骤 8（可观测性）阶段统一补充。
+
+---
+
+## 13. 步骤 3c 审查记录 — 多维度测试 (2026-07-24)
+
+### 13.1 审查范围
+
+对步骤 3 + 3b 的 9 个变更文件进行了 5 维度扫描：
+
+| 维度 | 检查内容 | 检查文件数 |
+|------|----------|-----------|
+| 安全 | SQL 注入、Prompt 注入、封装破坏 | 4 |
+| 逻辑正确性 | Prompt 占位符、状态传递、反馈链路 | 3 |
+| 代码质量 | 重复代码、类型安全、DRY 原则 | 4 |
+| 架构 | 模块拆分合理性、单向依赖、路径一致性 | 5 |
+| 边界情况 | 空记忆、无用户、PG 不可用、连接断开 | 3 |
+
+### 13.2 发现清单
+
+#### 🟡 High — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 1 | **`_SUMMARY_PROMPT` 占位符未格式化** — `{conversation}` 以字面量传入 LLM，实际对话作为 user_message 而非替换到 system prompt 中，LLM 收到含 `{conversation}` 原始文本的系统消息 | `conversation.py:101` | 摘要质量下降 | `.format(conversation=conv_text)` 格式化后再发送 |
+| 2 | **`_msg_role`/`_msg_content` 重复定义** — `nodes.py:23-37` 和 `graph.py:210-224` 各一份完整实现，存在漂移风险 | `nodes.py` `graph.py` | 维护隐患 | `graph.py` 改为 `from .nodes import` 导入，删重复代码 |
+| 3 | **`stream()` 校验反馈硬编码** — 校验失败时写入固定字符串而非读取 validate 节点的实际返回，丢失审核器提供的具体错误原因 | `graph.py:201` | 重试质量下降 | 改为 `state.get("validation_feedback")` |
+| 4 | **`ConversationMemoryManager` 封装破坏** — 直接访问 `PgvectorStore._conn` / `_ensure_connection()` 私有成员，依赖内部实现 | `conversation.py` `dependencies.py` | 耦合脆弱 | `ConversationMemoryManager` 改为独立持有 `psycopg2` 连接，`_create_memory_manager()` 不再创建 `PgvectorStore` |
+
+#### 🟢 Medium — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 5 | **函数体内 import** — `nodes.py:190` 在 `generate_node` 内 `from src.llm.client import Message`，每次调用重复导入 | `nodes.py` | 微性能 | 提升到模块顶部 |
+
+#### 🟢 Low — 已知不修
+
+| # | 发现 | 模块 | 说明 |
+|---|------|------|------|
+| 6 | **`make_nodes()` 无类型标注** — `llm`/`retriever`/`memory_manager` 参数仅注释说明，无类型提示 | `nodes.py` | 当前均为 `Any`，Phase 2 统一补类型 |
+| 7 | **`ask()`/`stream()` 路径分歧** — `ask()` 走 LangGraph graph（含 `memory_retrieve` 节点），`stream()` 手动步进（自己调 memory manager），行为性等价但结构不一致 | `graph.py` | 当前功能正确，属历史架构问题 |
+| 8 | **无 `conversation_memories` 表存在性检查** — `ConversationMemoryManager` 假设表已由 `docker/init.sql` 创建，未做幂等建表 | `conversation.py` | 如果 init.sql 未执行会报 SQL 错误 |
+
+### 13.3 架构评估
+
+**步骤 3b 拆分质量** ✅：
+
+| 评估项 | 评分 | 说明 |
+|--------|------|------|
+| 单向依赖 | ✅ 优秀 | `state` ← `prompts` ← `nodes` ← `graph`，无循环 |
+| 关注点分离 | ✅ 优秀 | state 纯数据、prompts 纯模板、nodes 纯逻辑、graph 纯编排 |
+| 闭包注入 | ✅ 优秀 | `make_nodes(llm, retriever, memory, top_k, max_retries)` 模式清晰，比全局变量/类属性更可控 |
+| 零回归 | ✅ 通过 | step 3 12 测试 + 原有 203 测试 = 215 全通过 |
+
+**记忆检索集成质量** ✅：
+
+| 评估项 | 状态 | 说明 |
+|--------|------|------|
+| 内存检索降级 | ✅ | `memory_retrieve_node` 用 try/except 包裹，失败返回空 context |
+| PG 不可用降级 | ✅ | `_create_memory_manager` 返回 None，Agent 在 `memory_manager=None` 模式正常工作 |
+| 记忆注入位置 | ✅ | 记忆上下文放在法条前面（`nodes.py:179`），历史参考 → 法条原文，位置合理 |
+| 时间衰减 | ✅ | `retrieve()` 中 7 天外的记忆线性衰减，过期记忆自然淘汰 |
+
+### 13.4 SQL 注入审查：记忆层
+
+| 文件 | 查询 | 安全性 |
+|------|------|--------|
+| `conversation.py:112-125` | INSERT `conversation_memories` WITH `%s` | ✅ 参数化 |
+| `conversation.py:152-161` | SELECT `conversation_memories` WITH `%s` | ✅ 参数化 |
+| `dependencies.py` | 仅传递 PG_CONN 字符串，不构造 SQL | ✅ 无 SQL |
+
+### 13.5 步骤 3c 累计测试数
+
+| 来源 | 测试数 |
+|------|--------|
+| step 1a-2 原有 | 203 |
+| step 3 新增 (test_memory.py) | 12 |
+| step 3b 零新增 | 0 |
+| **合计** | **215** |
+
+---
+
+## 14. 新增模块 API 速查
+
+### 14.1 ConversationMemoryManager
+
+```python
+from src.memory.conversation import ConversationMemoryManager
+
+mgr = ConversationMemoryManager(
+    conn_string="postgresql://...",
+    embedder=embedder,
+    llm=llm,
+)
+
+# 写入记忆（对话 ≥ 6 轮时自动触发摘要）
+summary = mgr.save_memory(user_id, session_id, messages)
+
+# 检索记忆
+memories = mgr.retrieve(user_id, "工伤认定标准")
+# → [{"summary": "...", "entities": {...}, "score": 0.85, ...}, ...]
+
+context = mgr.build_context(memories)
+# → "## 历史对话参考\n### 历史对话 1（相关度: 0.85）\n..."
+```
+
+### 14.2 Agent 模块拆分
+
+```
+src/agents/
+├── state.py       # AgentState TypedDict
+├── prompts.py     # REWRITE_PROMPT / VALIDATOR_PROMPT
+├── nodes.py       # make_nodes() 工厂 + 9 个节点函数
+└── graph.py       # LawAgentGraph 编排类
+```
