@@ -74,7 +74,8 @@ class FAISSRetriever(BaseRetriever):
         """
         self._store = vector_store
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
+    def search(self, query: str, top_k: int = 5, doc_type: str | None = None) -> list[RetrievedDoc]:
+        """语义检索 — doc_type 参数在 FAISS 模式下忽略（兼容接口）"""
         results = self._store.search_with_score(query, k=top_k)
         docs = [self._to_retrieved(doc, score) for doc, score in results]
         if RETRIEVAL_DROP_SUMMARY_CHUNKS:
@@ -270,7 +271,8 @@ class PgvectorRetriever(BaseRetriever):
             self._conn.commit()
             logger.info(f"pgvector 写入进度: {min(i + batch_size, total)}/{total}")
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
+    def search(self, query: str, top_k: int = 5, doc_type: str | None = None) -> list[RetrievedDoc]:
+        """语义检索 — doc_type 在旧 pgvector 模式下忽略（兼容接口）"""
         self._ensure_connection()
         vec = self._embedder.embed_query(query)
         where = "WHERE chunk_type <> 'chapter_summary' " if RETRIEVAL_DROP_SUMMARY_CHUNKS else ""

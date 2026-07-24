@@ -216,11 +216,12 @@ def classify_intent(query: str) -> bool:
 
 
 # 案例/判例关键词 — 命中则分类为案例查询
+# 注：匹配在 _normalize 后做子串查找，不支持正则，关键词应为纯文本
 _CASE_KEYWORDS = [
     "案例", "判例", "指导案例", "典型案件", "判决书",
-    "裁判", "人民法院", "最高法案例", "类似.*案子", "类案",
-    "过往.*判决", "怎么判的", "有什么案例", "先例",
-    "有没有.*案子", "类似的.*案件", "法院.*怎么判",
+    "裁判", "人民法院", "最高法案例", "类似案子", "类案",
+    "过往判决", "怎么判的", "有什么案例", "先例",
+    "有没有案子", "类似的案件", "法院怎么判",
     "刑事案件", "民事案件", "行政案件",
     "打官司", "翻案", "判例法",
 ]
@@ -235,6 +236,7 @@ def classify_query_type(query: str) -> str:
         "law_lookup"   — 法律条文查询，走法条检索路由
     """
     q = query.strip()
+    nq = _normalize(q)
 
     # 0. 安全过滤失败 → 特殊处理
     _, is_safe, _ = sanitize_input(q)
@@ -245,8 +247,7 @@ def classify_query_type(query: str) -> str:
     if not classify_intent(q):
         return "casual"
 
-    # 2. 案例关键词检测
-    nq = _normalize(q)
+    # 2. 案例关键词检测（已去重 normalize，直接在 nq 上匹配）
     for kw in _CASE_KEYWORDS:
         if _normalize(kw) in nq:
             return "case_query"

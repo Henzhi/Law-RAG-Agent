@@ -71,7 +71,7 @@ def chat(req: ChatRequest):
     try:
         if AGENT_ENABLED:
             agent = get_agent()
-            result = agent.ask(req.query, history=req.history)
+            result = agent.ask(safe_query, history=req.history)
             elapsed = (time.perf_counter() - t_start) * 1000
             ret_docs = result.get("retrieved_docs", [])
             perf_logger.info(
@@ -149,7 +149,7 @@ async def chat_stream(req: ChatRequest):
 
         def generate():
             try:
-                for event in agent.stream(req.query, history=req.history):
+                for event in agent.stream(safe_query, history=req.history):
                     yield _sse(event)
             except Exception as e:
                 elapsed = (time.perf_counter() - t_start) * 1000
