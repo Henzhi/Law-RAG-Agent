@@ -1,5 +1,10 @@
 """
-LangGraph 多 Agent 工作流 (v0.5)。
+LangGraph 多 Agent 工作流编排 (v0.5)。
+
+职责单一：构建和编译 StateGraph，将节点连接成工作流。
+节点实现 → agents/nodes.py
+状态定义 → agents/state.py
+提示词   → agents/prompts.py
 
 流程:
     intent → memory_retrieve → rewrite → retrieve → generate → validate
@@ -10,154 +15,22 @@ LangGraph 多 Agent 工作流 (v0.5)。
 from __future__ import annotations
 
 import logging
-from typing import TypedDict, Annotated, Iterator, Optional
+from typing import Iterator
 
 from langgraph.graph import StateGraph, END
-from langgraph.graph.message import add_messages
 
+from src.agents.state import AgentState
+from src.agents.nodes import make_nodes, build_hierarchical_context
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
+from src.rag.intent import classify_intent
+from src.llm.client import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# State
-# ---------------------------------------------------------------------------
-
-class AgentState(TypedDict):
-    query: str                      # 原始用户查询
-    rewritten_query: str            # 改写后的查询
-    messages: Annotated[list, add_messages]  # 对话历史
-    retrieved_docs: list[dict]      # 检索结果
-    answer: str                     # 生成的回答
-    validation_passed: bool         # 校验是否通过
-    validation_feedback: str        # 校验失败时的反馈信息
-    retry_count: int                # 重试次数
-    is_legal_query: bool            # 意图识别：是否法律问题
-    memory_context: str             # 历史对话记忆上下文
-    user_id: str                    # 用户 ID（用于记忆检索）
-
-
-# ---------------------------------------------------------------------------
-# Prompts
-# ---------------------------------------------------------------------------
-
-REWRITE_PROMPT = """你是一个法律查询改写助手。将用户的自然语言问题改写为更适合法律条文检索的查询。
-
-## 规则
-1. 保留原问题的核心法律概念
-2. 补充不完整的法律名称（如"那个法"要补全）
-3. 使用正式的法律术语
-4. 只输出改写后的查询，不要解释
-
-## 示例
-用户: 打人怎么处罚 → 故意伤害他人的治安处罚标准
-用户: 那个治安法里咋说的 → 治安管理处罚法相关规定
-用户: 酒驾吊销驾照多久 → 饮酒后驾驶机动车驾驶证吊销期限
-
-## 对话历史
-{history}
-
-## 用户问题
-{query}
-
-改写后的查询："""
-
-
-VALIDATOR_PROMPT = """
-你是一个严格的法律回答幻觉审核器。你的唯一任务是审查 AI 生成的法律回答是否存在**事实性幻觉**，包括：
-
-- 虚构、篡改或引用不存在的法律条文、司法解释、案例
-- 将已失效的法律当作现行有效法律使用
-- 法律原则、法律后果、程序规则等出现根本性错误
-- 关键事实假设毫无根据，严重误导用户
-
-**审核标准**：
-- 仅关注**客观、可验证的法律事实错误**，不评判表达风格、详略程度、主观建议是否最优。
-- 只要回答中包含任何一处确定的幻觉或重大法律错误，即判定为 **FAIL**。
-- 如果回答没有幻觉和重大错误（即使不够全面、有遗漏），判定为 **PASS**。
-
-**输入格式**：
-用户问题：
-{query}
-
-检索到的法律条文：
-{context}
-
-AI 回答：
-{answer}
-
-**输出要求**：
-只输出以下格式，不要添加额外解释或礼貌用语：
-
-`PASS` 或 `FAIL`
-理由：（一句话，指出具体哪一点错误，若无则写“未发现幻觉”）
-
----
-
-**示例**
-
-输入：
-用户问题：借条上没写还款日期，诉讼时效怎么算？
-AI 回答：根据《民法典》第188条，诉讼时效为3年，从您知道权利受侵害之日起计算。如果借条没有还款日期，诉讼时效从您第一次要账时起算。
-
-输出：
-PASS
-理由：未发现幻觉
-
----
-
-输入：
-用户问题：试用期单位不交社保合法吗？
-AI 回答：根据《劳动合同法》第17条，试用期属于劳动合同的协商条款，单位可以不交社保。
-
-输出：
-FAIL
-理由：虚构试用期可不交社保的规定，与实际法律要求不符
-"""
-
-
-
-# ---------------------------------------------------------------------------
-# 意图识别
-# ---------------------------------------------------------------------------
-# 统一收敛到 src.rag.intent（classify_intent / is_casual_query / needs_retrieval），
-# 与 RAG 引擎共用同一份逻辑，避免两份实现行为漂移。
-from src.rag.intent import classify_intent
-
-
-# ---------------------------------------------------------------------------
-# 消息工具（兼容 dict 和 LangChain message 对象）
-# ---------------------------------------------------------------------------
-
-def _msg_role(m) -> str:
-    """获取消息角色，兼容 dict 和 LangChain message 对象"""
-    if hasattr(m, "type"):
-        type_map = {"human": "user", "ai": "assistant", "system": "system"}
-        return type_map.get(m.type, m.type or "user")
-    if isinstance(m, dict):
-        return m.get("role", "user")
-    return "user"
-
-
-def _msg_content(m) -> str:
-    """获取消息内容，兼容 dict 和 LangChain message 对象"""
-    if hasattr(m, "content"):
-        return str(m.content) if m.content else ""
-    if isinstance(m, dict):
-        return str(m.get("content", ""))
-    return str(m)
-
-
-# ---------------------------------------------------------------------------
-# 多 Agent 引擎
-# ---------------------------------------------------------------------------
-
 class LawAgentGraph:
-    """LangGraph 多 Agent 法律问答引擎 (v0.5)
-
-    新增 memory_retrieve 节点，在改写查询前检索用户历史对话记忆。
+    """LangGraph 多 Agent 法律问答引擎
 
     用法:
         agent = LawAgentGraph(retriever, llm)
@@ -178,37 +51,38 @@ class LawAgentGraph:
         self.top_k = top_k
         self.max_retries = max_retries
         self._memory = memory_manager
-        self._graph = self._build_graph()
+
+        # 通过工厂函数注入依赖，节点本身无状态
+        nodes = make_nodes(llm, retriever, memory_manager, top_k, max_retries)
+        self._nodes = nodes
+        self._graph = self._build_graph(nodes)
 
     # ------------------------------------------------------------------
     # 图构建
     # ------------------------------------------------------------------
 
-    def _build_graph(self) -> StateGraph:
+    def _build_graph(self, nodes: dict) -> StateGraph:
         builder = StateGraph(AgentState)
 
-        builder.add_node("intent", self._classify_intent)
-        builder.add_node("casual_reply", self._casual_reply)
-        builder.add_node("memory_retrieve", self._memory_retrieve)
-        builder.add_node("rewrite", self._rewrite_query)
-        builder.add_node("retrieve", self._retrieve)
-        builder.add_node("generate", self._generate)
-        builder.add_node("validate", self._validate)
+        builder.add_node("intent", nodes["classify_intent"])
+        builder.add_node("casual_reply", nodes["casual_reply"])
+        builder.add_node("memory_retrieve", nodes["memory_retrieve"])
+        builder.add_node("rewrite", nodes["rewrite_query"])
+        builder.add_node("retrieve", nodes["retrieve"])
+        builder.add_node("generate", nodes["generate"])
+        builder.add_node("validate", nodes["validate"])
 
         builder.set_entry_point("intent")
-        # 意图 → 闲聊 / 法律
         builder.add_conditional_edges(
-            "intent", self._route_by_intent,
-            {"legal": "memory_retrieve", "casual": "casual_reply"},  # 法律先查记忆
+            "intent", nodes["route_by_intent"],
+            {"legal": "memory_retrieve", "casual": "casual_reply"},
         )
         builder.add_edge("casual_reply", END)
-        # 法律路径: memory → rewrite → retrieve → generate → validate
         builder.add_edge("memory_retrieve", "rewrite")
         builder.add_edge("rewrite", "retrieve")
         builder.add_edge("retrieve", "generate")
         builder.add_conditional_edges(
-            "validate",
-            self._should_retry,
+            "validate", nodes["should_retry"],
             {"retry": "generate", "end": END},
         )
         builder.add_edge("generate", "validate")
@@ -216,156 +90,12 @@ class LawAgentGraph:
         return builder.compile()
 
     # ------------------------------------------------------------------
-    # 节点实现
-    # ------------------------------------------------------------------
-
-    def _classify_intent(self, state: AgentState) -> dict:
-        """意图识别节点：判断是闲聊还是法律问题"""
-        is_legal = classify_intent(state["query"])
-        logger.info(f"意图识别: '{state['query']}' → {'法律' if is_legal else '闲聊'}")
-        return {"is_legal_query": is_legal}
-
-    def _route_by_intent(self, state: AgentState) -> str:
-        """根据意图路由到不同分支"""
-        return "legal" if state.get("is_legal_query", True) else "casual"
-
-    def _memory_retrieve(self, state: AgentState) -> dict:
-        """记忆检索节点：查找用户历史对话中与当前问题相关的内容"""
-        if self._memory is None:
-            return {"memory_context": ""}
-
-        user_id = state.get("user_id", "")
-        if not user_id:
-            return {"memory_context": ""}
-
-        try:
-            memories = self._memory.retrieve(user_id, state["query"])
-            context = self._memory.build_context(memories)
-            if context:
-                logger.info(f"记忆命中: user={user_id[:8]}..., {len(memories)}条")
-            return {"memory_context": context}
-        except Exception as e:
-            logger.warning(f"记忆检索失败: {e}")
-            return {"memory_context": ""}
-
-    def _casual_reply(self, state: AgentState) -> dict:
-        """闲聊直接回复，不走检索"""
-        from src.rag.engine import CASUAL_SYSTEM_PROMPT
-        answer = self.llm.chat(state["query"], system_prompt=CASUAL_SYSTEM_PROMPT)
-        return {"answer": answer, "validation_passed": True}
-
-    def _rewrite_query(self, state: AgentState) -> dict:
-        query = state["query"]
-        history = state.get("messages", [])
-
-        # 构建历史文本
-        hist_text = ""
-        if history:
-            recent = history[-6:]  # 最近 3 轮
-            hist_text = "\n".join(
-                f"{_msg_role(m)}: {str(_msg_content(m))[:200]}"
-                for m in recent
-            )
-
-        prompt = REWRITE_PROMPT.format(query=query, history=hist_text or "（首次对话）")
-        rewritten = self.llm.chat(prompt, system_prompt="你是一个法律查询改写助手，只输出改写后的查询。").strip()
-        # 去掉可能的引号包裹
-        rewritten = rewritten.strip('"').strip("'").strip()
-        if not rewritten or len(rewritten) < 2:
-            rewritten = query
-
-        logger.info(f"查询改写: '{query}' → '{rewritten}'")
-        return {"rewritten_query": rewritten}
-
-    def _retrieve(self, state: AgentState) -> dict:
-        q = state.get("rewritten_query", state["query"])
-        docs = self.retriever.search(q, top_k=self.top_k)
-        return {
-            "retrieved_docs": [
-                {"content": d.content, "law_name": d.law_name,
-                 "article_range": d.article_range, "citation": d.citation}
-                for d in docs
-            ]
-        }
-
-    def _generate(self, state: AgentState) -> dict:
-        docs = state.get("retrieved_docs", [])
-        query = state.get("rewritten_query", state["query"])
-        feedback = state.get("validation_feedback", "")
-        memory_context = state.get("memory_context", "")
-
-        ctx = _build_hierarchical_context(docs)
-
-        # 记忆上下文放在法条前面
-        if memory_context:
-            ctx = memory_context + "\n\n" + ctx
-
-        # 重试时追加质量提醒
-        extra = ""
-        if feedback:
-            extra = f"\n\n## ⚠️ 上次回答不合格\n原因: {feedback}\n请确保本次回答: 引用法律名称、标注条款号、不编造内容。"
-
-        prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query) + extra
-
-        # 附加当前会话历史
-        from src.llm.client import Message as LLMMessage
-        history = []
-        for m in state.get("messages", [])[-6:]:
-            role = _msg_role(m)
-            content = _msg_content(m)[:300]
-            if role in ("human", "ai", "user", "assistant"):
-                role = "user" if role == "human" else "assistant" if role == "ai" else role
-                history.append(LLMMessage(role, content))
-
-        answer = self.llm.chat(prompt, history=history if history else None)
-        return {"answer": answer}
-
-    def _validate(self, state: AgentState) -> dict:
-        answer = state.get("answer", "")
-        docs = state.get("retrieved_docs", [])
-        retry = state.get("retry_count", 0)
-        query = state.get("query", "")
-
-        # 无检索结果时直接通过
-        if not docs:
-            return {"validation_passed": True}
-
-        ctx = "\n".join(
-            f"- {d.get('citation','')}: {d.get('content','')[:120]}"
-            for d in docs[:5]
-        )
-        prompt = VALIDATOR_PROMPT.format(query=query, context=ctx, answer=answer[:800])
-        result = self.llm.chat(prompt, system_prompt="你是一个法律回答审核员。").strip()
-
-        passed = "PASS" in result.upper()
-        if not passed and retry < self.max_retries:
-            # 提取失败原因（"理由："之后的内容）
-            reason = ""
-            if "理由" in result:
-                reason = result.split("理由", 1)[1].strip().lstrip("：:").strip()
-            elif "\n" in result:
-                reason = result.split("\n", 1)[1].strip()
-            logger.info(f"校验未通过，重试 {retry + 1}/{self.max_retries}: {reason}")
-            return {
-                "validation_passed": False,
-                "retry_count": retry + 1,
-                "validation_feedback": reason or "回答未引用法律名称或条款号",
-            }
-
-        return {"validation_passed": True}
-
-    def _should_retry(self, state: AgentState) -> str:
-        if not state.get("validation_passed", True):
-            return "retry"
-        return "end"
-
-    # ------------------------------------------------------------------
     # 公开接口
     # ------------------------------------------------------------------
 
     def ask(self, query: str, history: list[dict] | None = None, user_id: str = "") -> dict:
         """同步问答，返回完整 state"""
-        initial = {
+        initial: AgentState = {
             "query": query,
             "messages": history or [],
             "rewritten_query": "",
@@ -378,8 +108,7 @@ class LawAgentGraph:
             "memory_context": "",
             "user_id": user_id,
         }
-        result = self._graph.invoke(initial)
-        return result
+        return self._graph.invoke(initial)
 
     def stream(self, query: str, history: list[dict] | None = None, user_id: str = "") -> Iterator[dict]:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
@@ -396,14 +125,14 @@ class LawAgentGraph:
             yield {"type": "thinking", "content": "✅ 完成"}
             return
 
-        state = {
+        state: dict = {
             "query": query, "messages": history or [], "rewritten_query": "",
             "retrieved_docs": [], "answer": "", "validation_passed": False,
             "retry_count": 0, "validation_feedback": "", "is_legal_query": True,
             "memory_context": "", "user_id": user_id,
         }
 
-        # 2. 记忆检索（新增）
+        # 2. 记忆检索
         if self._memory and user_id:
             yield {"type": "thinking", "content": "🧠 检索历史记忆..."}
             try:
@@ -422,7 +151,7 @@ class LawAgentGraph:
 
             # 3. Rewrite
             yield {"type": "thinking", "content": "⏳ 正在理解问题..."}
-            state.update(self._rewrite_query(state))
+            state.update(self._nodes["rewrite_query"](state))
             rw = state.get("rewritten_query", query)
             if rw != query:
                 yield {"type": "thinking", "content": f"📝 查询改写: {rw}"}
@@ -431,7 +160,7 @@ class LawAgentGraph:
 
             # 4. Retrieve
             yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
-            state.update(self._retrieve(state))
+            state.update(self._nodes["retrieve"](state))
             docs = state.get("retrieved_docs", [])
             yield {"type": "thinking", "content": f"📚 检索完成，找到 {len(docs)} 条相关条文"}
             if docs:
@@ -440,16 +169,16 @@ class LawAgentGraph:
             sources = [{"law_name": d.get("law_name", ""), "citation": d.get("citation", ""), "score": 0.0} for d in docs]
             yield {"type": "meta", "sources": sources, "is_casual": False, "rewritten": rw}
 
-            # 5. Generate — 记忆上下文注入 Prompt
+            # 5. Generate
             yield {"type": "thinking", "content": "💭 模型正在思考..."}
             fb = state.get("validation_feedback", "")
             memory_ctx = state.get("memory_context", "")
-            ctx = _build_hierarchical_context(docs)
+            ctx = build_hierarchical_context(docs)
             if memory_ctx:
                 ctx = memory_ctx + "\n\n" + ctx
             extra = f"\n\n## ⚠️ 上次回答不合格\n原因: {fb}\n请确保本次回答: 引用法律名称、标注条款号、不编造内容。" if fb else ""
             prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=rw) + extra
-            from src.llm.client import Message as LLMMessage
+
             hist = []
             for m in state.get("messages", [])[-6:]:
                 r = _msg_role(m); c = _msg_content(m)[:300]
@@ -464,7 +193,7 @@ class LawAgentGraph:
 
             # 6. Validate
             yield {"type": "thinking", "content": "🔎 审核回答质量..."}
-            state.update(self._validate(state))
+            state.update(self._nodes["validate"](state))
             if state.get("validation_passed", True):
                 yield {"type": "thinking", "content": "✅ 审核通过"}
                 break
@@ -475,37 +204,21 @@ class LawAgentGraph:
 
 
 # ---------------------------------------------------------------------------
-# 层级上下文构建（engine 和 agent 共用）
+# 消息工具（graph 内部使用）
 # ---------------------------------------------------------------------------
 
-def _build_hierarchical_context(docs: list[dict]) -> str:
-    """将检索结果按 (法律名, 章) 分组构建层级结构化上下文"""
-    groups: dict[str, dict[str, list]] = {}  # law → chapter → [docs]
-    seen = set()
-    for doc in docs:
-        law = doc.get("law_name", "")
-        article = doc.get("article_range", "")
-        key = (law, article)
-        if key in seen:
-            continue
-        seen.add(key)
-        chapter = doc.get("chapter", "") or "总则"
-        groups.setdefault(law, {}).setdefault(chapter, []).append(doc)
+def _msg_role(m) -> str:
+    if hasattr(m, "type"):
+        type_map = {"human": "user", "ai": "assistant", "system": "system"}
+        return type_map.get(m.type, m.type or "user")
+    if isinstance(m, dict):
+        return m.get("role", "user")
+    return "user"
 
-    parts = []
-    idx = 0
-    for law_name, chapters in groups.items():
-        for chapter, ch_docs in chapters.items():
-            section = ch_docs[0].get("section", "") if ch_docs else ""
-            if section:
-                parts.append(f"## 《{law_name}》{chapter} → {section}")
-            else:
-                parts.append(f"## 《{law_name}》{chapter}")
-            for doc in ch_docs:
-                idx += 1
-                content = doc.get("content", "")
-                if "\n" in content and content.startswith("【"):
-                    content = content.split("\n", 1)[1]
-                parts.append(f"### {idx}. {doc.get('article_range', '')}\n{content.strip()}")
 
-    return "\n\n".join(parts) if parts else "（未找到相关条文）"
+def _msg_content(m) -> str:
+    if hasattr(m, "content"):
+        return str(m.content) if m.content else ""
+    if isinstance(m, dict):
+        return str(m.get("content", ""))
+    return str(m)
