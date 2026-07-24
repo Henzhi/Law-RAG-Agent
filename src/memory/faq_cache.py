@@ -97,22 +97,29 @@ class FAQCache:
         if row is None:
             return None
 
-        answer, sources, score = row
+        answer, sources_raw, score = row
 
-        # 更新命中次数
+        # 解析 JSON — PSQL 中 sources 以 json.dumps 写入，取回后是 str
+        import json as _json
+        try:
+            sources = _json.loads(sources_raw) if isinstance(sources_raw, str) else (sources_raw or [])
+        except (json.JSONDecodeError, TypeError):
+            sources = []
+
+        # 更新命中次数（通过 FAQ ID 精确定位）
         with self._conn.cursor() as cur:
             cur.execute(
                 "UPDATE faq_cache SET hit_count = hit_count + 1 "
-                "WHERE question_embed <=> %s::halfvec = "
-                "(SELECT MIN(question_embed <=> %s::halfvec) FROM faq_cache WHERE status='active')",
-                (vec, vec),
+                "WHERE id = (SELECT id FROM faq_cache WHERE status = 'active' "
+                " ORDER BY question_embed <=> %s::halfvec LIMIT 1)",
+                (vec,),
             )
         self._conn.commit()
 
         logger.info(f"FAQ缓存命中: score={round(float(score), 4)}")
         return {
             "answer": answer,
-            "sources": sources or [],
+            "sources": sources,
             "score": round(float(score), 4),
         }
 

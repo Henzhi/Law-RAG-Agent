@@ -96,7 +96,21 @@ class LawAgentGraph:
     # ------------------------------------------------------------------
 
     def ask(self, query: str, history: list[dict] | None = None, user_id: str = "") -> dict:
-        """同步问答，返回完整 state"""
+        """同步问答 — 含 FAQ 缓存检查（与 stream() 路径行为一致）"""
+        # FAQ 缓存检查
+        if self._faq_cache:
+            try:
+                cached = self._faq_cache.check(query)
+                if cached:
+                    logger.info(f"ask() FAQ缓存命中: score={cached['score']}")
+                    return {
+                        "query": query, "answer": cached["answer"],
+                        "retrieved_docs": [], "is_legal_query": True,
+                        "cached": True,
+                    }
+            except Exception as e:
+                logger.warning(f"FAQ缓存检查失败: {e}")
+
         initial: AgentState = {
             "query": query,
             "messages": history or [],

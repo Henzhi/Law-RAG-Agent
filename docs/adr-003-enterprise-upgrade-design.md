@@ -18,6 +18,7 @@
 | 07-24 | 3b | 软件工程重构 — graph.py 拆分为 state/prompts/nodes/graph 四文件 ✅ |
 | 07-24 | 3d | 审查修复 — 移除未使用导入LLM_BASE_URL + 修复_create_embedder的base_url泄漏 ✅ |
 | 07-24 | 4  | FAQ语义缓存 — FAQCache + Agent流式集成 + 5测试 (244 total) ✅ |
+| 07-24 | 4b | 步骤4审查 — 多维度质量检测: sources反序列化 + ask()缓存一致性 + hit_count精确更新 + 245测试 ✅ |
 | 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
 
@@ -1046,3 +1047,58 @@ src/agents/
 ├── nodes.py       # make_nodes() 工厂 + 9 个节点函数
 └── graph.py       # LawAgentGraph 编排类
 ```
+
+---
+
+## 15. 步骤 4b 审查记录 — 多维度质量检测 (2026-07-24)
+
+### 15.1 审查范围
+
+对步骤 4（FAQ 语义缓存）的 5 个变更文件进行了 5 维度质量检测：
+
+| 维度 | 检查内容 | 检查文件数 |
+|------|----------|-----------|
+| 安全 | SQL 注入、缓存投毒、输入可信度 | 2 |
+| 数据一致性 | 序列化/反序列化配对、类型安全 | 2 |
+| 架构一致性 | `ask()`/`stream()` 路径行为对等 | 2 |
+| 原子性 | hit_count 更新精度、并发场景 | 1 |
+| 边界情况 | 重复存储、空 sources、连接断开 | 2 |
+
+### 15.2 发现清单
+
+#### 🟡 High — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 1 | **`check()` 返回 sources 为 JSON 字符串** — `store()` 以 `json.dumps(...)` 写入，但 `check()` 未 `json.loads` 解析，前端收到的 `sources` 是字符串 `"[]"` 而非列表 `[]` | `faq_cache.py:100-117` | 前端展示异常 | `check()` 新增 `json.loads()` 解析步骤，返回 Python list |
+| 2 | **`ask()` 路径缺少 FAQ 缓存** — `stream()` 入口检查 FAQ 缓存，`ask()` 直接进入 graph 无缓存检查，两条路径行为不对称 | `graph.py:98-113` | 内部调用无缓存加速 | `ask()` 开头新增 FAQ 缓存检查，与 `stream()` 行为对齐 |
+| 3 | **hit_count 更新用 MIN 子查询** — `UPDATE ... WHERE distance = (SELECT MIN(distance))` 若两行距离相等则批量更新，虽概率极低但非原子 | `faq_cache.py:103-109` | 统计偏差 | 改为 `WHERE id = (SELECT id ... ORDER BY distance LIMIT 1)` 精确定位单行 |
+
+### 15.3 SQL 注入审查：FAQ 缓存层
+
+| 文件 | 查询 | 安全性 |
+|------|------|--------|
+| `faq_cache.py:84-92` | SELECT `faq_cache` WITH `%s` × 3 | ✅ 参数化 |
+| `faq_cache.py:103-108` | UPDATE `faq_cache` WITH `%s` | ✅ 参数化 |
+| `faq_cache.py:150-164` | INSERT `faq_cache` WITH `%s` × 7 | ✅ 参数化 |
+| `faq_cache.py:181-184` | UPDATE `faq_cache` WITH `%s` | ✅ 参数化 |
+| `faq_cache.py:195` | DELETE `faq_cache` (无外部输入) | ✅ 安全 |
+
+### 15.4 缓存架构评估
+
+| 评估项 | 状态 | 说明 |
+|--------|------|------|
+| 读路径降级 | ✅ | `check()` 异常返回 None，上层走 RAG 流程 |
+| 写路径降级 | ✅ | `store()` 异常被 catch，不影响正常流程 |
+| 级联失效 | ✅ | `invalidate_by_law(law_id)` 批量标记 `invalidated` |
+| TTL 清理 | ✅ | `clean_expired()` + `INTERVAL '7 days'` 自动过期 |
+| 阈值可配 | ✅ | `HIT_THRESHOLD = 0.95` 模块级常量 |
+| 原子操作 | ✅ | `ORDER BY ... LIMIT 1` 精确更新单行 |
+
+### 15.5 步骤 4b 累计测试数
+
+| 来源 | 测试数 |
+|------|--------|
+| step 1a~4 原有 | 244 |
+| step 4b 修复 | +1 (无新增测试) |
+| **合计** | **245** |
