@@ -25,5 +25,6 @@ class AgentState(TypedDict):
     validation_feedback: str        # 校验失败时的反馈信息（用于重试）
     retry_count: int                # 已重试次数
     is_legal_query: bool            # 意图识别：是否法律问题
+    query_type: str                 # 查询类型: law_lookup | case_query | casual
     memory_context: str             # 历史对话记忆上下文（注入 Prompt）
     user_id: str                    # 用户 ID（用于记忆检索）

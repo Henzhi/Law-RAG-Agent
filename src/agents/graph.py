@@ -23,7 +23,7 @@ from src.agents.state import AgentState
 from src.agents.nodes import make_nodes, build_hierarchical_context, _msg_role, _msg_content
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
-from src.rag.intent import classify_intent
+from src.rag.intent import classify_intent, classify_query_type
 from src.llm.client import Message as LLMMessage
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,8 @@ class LawAgentGraph:
 
     def ask(self, query: str, history: list[dict] | None = None, user_id: str = "") -> dict:
         """同步问答 — 含 FAQ 缓存检查（与 stream() 路径行为一致）"""
+        query_type = classify_query_type(query)
+
         # FAQ 缓存检查
         if self._faq_cache:
             try:
@@ -120,7 +122,8 @@ class LawAgentGraph:
             "validation_passed": False,
             "validation_feedback": "",
             "retry_count": 0,
-            "is_legal_query": True,
+            "is_legal_query": query_type != "casual",
+            "query_type": query_type,
             "memory_context": "",
             "user_id": user_id,
         }
@@ -130,9 +133,11 @@ class LawAgentGraph:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
         yield {"type": "thinking", "content": "🔧 正在初始化 Agent..."}
 
-        # 1. 意图识别
-        is_legal = classify_intent(query)
-        yield {"type": "thinking", "content": f"🎯 意图识别: {'法律问题 → 检索法条' if is_legal else '闲聊 → 直接回复'}"}
+        # 1. 意图识别（三分类）
+        query_type = classify_query_type(query)
+        is_legal = query_type != "casual"
+        type_label = {"law_lookup": "法律条文查询", "case_query": "案例检索", "casual": "闲聊"}
+        yield {"type": "thinking", "content": f"🎯 意图识别: {type_label.get(query_type, query_type)}"}
 
         if not is_legal:
             yield {"type": "thinking", "content": "📝 直接回复，无需检索"}
@@ -159,7 +164,7 @@ class LawAgentGraph:
             "query": query, "messages": history or [], "rewritten_query": "",
             "retrieved_docs": [], "answer": "", "validation_passed": False,
             "retry_count": 0, "validation_feedback": "", "is_legal_query": True,
-            "memory_context": "", "user_id": user_id,
+            "query_type": query_type, "memory_context": "", "user_id": user_id,
         }
 
         # 3. 记忆检索
@@ -188,11 +193,12 @@ class LawAgentGraph:
             else:
                 yield {"type": "thinking", "content": "📝 使用原始查询"}
 
-            # 5. Retrieve
+            # 5. Retrieve（按意图路由文档类型）
             yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
             state.update(self._nodes["retrieve"](state))
             docs = state.get("retrieved_docs", [])
-            yield {"type": "thinking", "content": f"📚 检索完成，找到 {len(docs)} 条相关条文"}
+            type_hint = "案例" if query_type == "case_query" else "条文"
+            yield {"type": "thinking", "content": f"📚 检索完成，找到 {len(docs)} 条相关{type_hint}"}
             if docs:
                 citations = [d.get("citation", "") for d in docs[:5]]
                 yield {"type": "thinking", "content": f"📖 引用: {', '.join(citations)}"}

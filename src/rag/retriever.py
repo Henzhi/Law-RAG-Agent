@@ -147,12 +147,13 @@ class PgvectorStoreRetriever(BaseRetriever):
         self._embedder = embedder
         self._embedding_model = embedding_model or embedder.model
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
+    def search(self, query: str, top_k: int = 5, doc_type: str | None = None) -> list[RetrievedDoc]:
         vec = self._embedder.embed_query(query)
         rows = self._store.search(
             query_vec=vec,
             top_k=top_k,
             embedding_model=self._embedding_model,
+            doc_type=doc_type,
             drop_summary=RETRIEVAL_DROP_SUMMARY_CHUNKS,
             sim_threshold=RETRIEVAL_SIM_THRESHOLD,
         )

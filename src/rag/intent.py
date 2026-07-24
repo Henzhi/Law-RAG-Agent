@@ -187,7 +187,7 @@ def is_casual_query(query: str) -> bool:
 def classify_intent(query: str) -> bool:
     """意图识别：是否为法律相关问题？
 
-    1. 正则兜底：明显闲聊（含天气/笑话等短语集合未覆盖的模式）→ 闲聊
+    1. 正则兜底：明显闲聊 → 闲聊
     2. 标准化后精确匹配闲聊短语 → 闲聊
     3. 标准化后包含法律关键词 → 法律
     4. 短查询（≤4字）包含闲聊短语 → 闲聊（二次检查）
@@ -196,29 +196,68 @@ def classify_intent(query: str) -> bool:
     q = query.strip()
     nq = _normalize(q)
 
-    # 0. 正则兜底：与 RAG 引擎（is_casual_query）统一闲聊判定，避免天气/笑话等
-    #    漏过短语集合而误走检索。空串保留给步骤 5 默认检索，故加 q 非空保护。
     if q and is_casual_query(query):
         return False
 
-    # 1. 精确匹配闲聊短语
     for phrase in _CASUAL_PHRASES:
         if _normalize(phrase) == nq:
             return False
 
-    # 2. 包含法律关键词
     for kw in _LEGAL_KEYWORDS:
         if _normalize(kw) in nq:
             return True
 
-    # 3. 短查询二次检查：包含闲聊短语
     if len(nq) <= 4:
         for phrase in _CASUAL_PHRASES:
             if _normalize(phrase) in nq:
                 return False
 
-    # 4. 默认走检索
     return True
+
+
+# 案例/判例关键词 — 命中则分类为案例查询
+_CASE_KEYWORDS = [
+    "案例", "判例", "指导案例", "典型案件", "判决书",
+    "裁判", "人民法院", "最高法案例", "类似.*案子", "类案",
+    "过往.*判决", "怎么判的", "有什么案例", "先例",
+    "有没有.*案子", "类似的.*案件", "法院.*怎么判",
+    "刑事案件", "民事案件", "行政案件",
+    "打官司", "翻案", "判例法",
+]
+
+
+def classify_query_type(query: str) -> str:
+    """意图三分类：返回查询类型
+
+    Returns:
+        "casual"       — 闲聊/问候，不检索
+        "case_query"   — 案例查询，走案例检索路由
+        "law_lookup"   — 法律条文查询，走法条检索路由
+    """
+    q = query.strip()
+
+    # 0. 安全过滤失败 → 特殊处理
+    _, is_safe, _ = sanitize_input(q)
+    if not is_safe:
+        return "casual"
+
+    # 1. 闲聊检测
+    if not classify_intent(q):
+        return "casual"
+
+    # 2. 案例关键词检测
+    nq = _normalize(q)
+    for kw in _CASE_KEYWORDS:
+        if _normalize(kw) in nq:
+            return "case_query"
+
+    # 3. 包含法律关键词 → 法条查询
+    for kw in _LEGAL_KEYWORDS:
+        if _normalize(kw) in nq:
+            return "law_lookup"
+
+    # 4. 默认：长查询走法条检索
+    return "law_lookup"
 
 
 # ---------------------------------------------------------------------------

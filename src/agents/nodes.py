@@ -10,7 +10,7 @@ import logging
 
 from src.agents.state import AgentState
 from src.agents.prompts import REWRITE_PROMPT, VALIDATOR_PROMPT
-from src.rag.intent import classify_intent
+from src.rag.intent import classify_intent, classify_query_type
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
 from src.llm.client import Message as LLMMessage
 
@@ -99,9 +99,10 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
     # ---- 意图识别 ----
 
     def classify_intent_node(state: AgentState) -> dict:
-        is_legal = classify_intent(state["query"])
-        logger.info(f"意图识别: '{state['query']}' → {'法律' if is_legal else '闲聊'}")
-        return {"is_legal_query": is_legal}
+        query_type = classify_query_type(state["query"])
+        is_legal = query_type != "casual"
+        logger.info(f"意图识别: '{state['query']}' → {query_type}")
+        return {"is_legal_query": is_legal, "query_type": query_type}
 
     def route_by_intent(state: AgentState) -> str:
         return "legal" if state.get("is_legal_query", True) else "casual"
@@ -157,7 +158,13 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
 
     def retrieve_node(state: AgentState) -> dict:
         q = state.get("rewritten_query", state["query"])
-        docs = retriever.search(q, top_k=top_k)
+        query_type = state.get("query_type", "law_lookup")
+
+        # 按意图路由文档类型
+        doc_type_map = {"case_query": "case", "law_lookup": "law"}
+        doc_type = doc_type_map.get(query_type)
+
+        docs = retriever.search(q, top_k=top_k, doc_type=doc_type)
         return {
             "retrieved_docs": [
                 {"content": d.content, "law_name": d.law_name,
