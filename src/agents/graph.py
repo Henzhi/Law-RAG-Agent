@@ -7,10 +7,10 @@ LangGraph 多 Agent 工作流编排 (v0.5)。
 提示词   → agents/prompts.py
 
 流程:
-    intent → memory_retrieve → rewrite → retrieve → generate → validate
-                ↑ 新增节点                                    ↓
-                └── 检索历史对话摘要                          ├─ PASS → END
-                                                            └─ FAIL → generate (重试)
+    intent → FAQ缓存检查 → memory_retrieve → rewrite → retrieve → generate → validate
+                ↓ 命中返回    ↑ 新增节点                             ↓
+                              └── 检索历史对话摘要   ├─ PASS → 存缓存 → END
+                                                    └─ FAIL → generate (重试)
 """
 from __future__ import annotations
 
@@ -127,7 +127,7 @@ class LawAgentGraph:
             yield {"type": "thinking", "content": "✅ 完成"}
             return
 
-        # 2. FAQ 缓存检查
+        # 2. FAQ 缓存检查（命中则直接返回，未命中继续 RAG 流程）
         if self._faq_cache:
             yield {"type": "thinking", "content": "⚡ 检查 FAQ 缓存..."}
             try:
@@ -140,10 +140,6 @@ class LawAgentGraph:
                     return
             except Exception as e:
                 logger.warning(f"FAQ缓存检查失败: {e}")
-            for token in self.llm.chat_stream(query):
-                yield {"type": "token", "content": token}
-            yield {"type": "thinking", "content": "✅ 完成"}
-            return
 
         state: dict = {
             "query": query, "messages": history or [], "rewritten_query": "",
@@ -152,7 +148,7 @@ class LawAgentGraph:
             "memory_context": "", "user_id": user_id,
         }
 
-        # 2. 记忆检索
+        # 3. 记忆检索
         if self._memory and user_id:
             yield {"type": "thinking", "content": "🧠 检索历史记忆..."}
             try:
@@ -169,7 +165,7 @@ class LawAgentGraph:
                 yield {"type": "clear", "content": ""}
                 yield {"type": "thinking", "content": f"--- 第 {attempt + 1} 次尝试 ---"}
 
-            # 3. Rewrite
+            # 4. Rewrite
             yield {"type": "thinking", "content": "⏳ 正在理解问题..."}
             state.update(self._nodes["rewrite_query"](state))
             rw = state.get("rewritten_query", query)
@@ -178,7 +174,7 @@ class LawAgentGraph:
             else:
                 yield {"type": "thinking", "content": "📝 使用原始查询"}
 
-            # 4. Retrieve
+            # 5. Retrieve
             yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
             state.update(self._nodes["retrieve"](state))
             docs = state.get("retrieved_docs", [])
@@ -189,7 +185,7 @@ class LawAgentGraph:
             sources = [{"law_name": d.get("law_name", ""), "citation": d.get("citation", ""), "score": 0.0} for d in docs]
             yield {"type": "meta", "sources": sources, "is_casual": False, "rewritten": rw}
 
-            # 5. Generate
+            # 6. Generate
             yield {"type": "thinking", "content": "💭 模型正在思考..."}
             fb = state.get("validation_feedback", "")
             memory_ctx = state.get("memory_context", "")
@@ -211,7 +207,7 @@ class LawAgentGraph:
                 answer_raw += token
             state["answer"] = answer_raw.strip() or "(未能生成回答)"
 
-            # 6. Validate
+            # 7. Validate
             yield {"type": "thinking", "content": "🔎 审核回答质量..."}
             state.update(self._nodes["validate"](state))
             if state.get("validation_passed", True):
