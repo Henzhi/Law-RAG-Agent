@@ -10,7 +10,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 
-from .dependencies import get_engine, get_agent
+from .dependencies import get_engine, get_agent, _create_embedder
 from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse
 from .auth import get_current_user, register_user, login_user
 from src.config import AGENT_ENABLED
@@ -290,3 +290,99 @@ def _dicts_to_retrieved(docs: list[dict]) -> list:
             "score": float(d.get("score", 0)),
         })())
     return result
+
+
+# ---------------------------------------------------------------------------
+# 4. 知识库 — 文档上传
+# ---------------------------------------------------------------------------
+
+@router.post("/knowledge/upload")
+async def upload_document(
+    file: UploadFile = File(...),
+    doc_type: str = Form("law"),
+    source: str = Form(""),
+    effective_date: str = Form(""),
+):
+    """上传法律文档（PDF/DOCX/TXT）
+
+    文件被保存到临时目录后由解析管道处理，
+    返回 task_id 用于查询处理进度。
+    """
+    import tempfile
+    from src.knowledge.ingestion.pipeline import IngestionPipeline
+    from src.api.dependencies import get_agent
+
+    # 验证文件扩展名
+    ext = Path(file.filename or "").suffix.lower()
+    allowed = {".pdf", ".docx", ".txt"}
+    if ext not in allowed:
+        raise HTTPException(400, f"不支持的文件格式: {ext}，支持: {', '.join(allowed)}")
+
+    # 检查文件大小
+    content = await file.read()
+    max_size = 50 * 1024 * 1024  # 50MB
+    if len(content) > max_size:
+        raise HTTPException(400, f"文件过大: {len(content) / 1024 / 1024:.1f}MB（限制 50MB）")
+
+    # 保存到临时文件
+    suffix = ext if ext else ".txt"
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    # 创建解析管道并提交任务
+    embedder = _create_embedder()
+    from src.knowledge.pgvector_store import PgvectorStore
+    from src.config import PG_CONN as _pg_conn
+    store = PgvectorStore(_pg_conn)
+    store.ensure_tables()
+    pipeline = IngestionPipeline(store, embedder)
+    task_id = pipeline.submit(
+        file_path=tmp_path,
+        doc_type=doc_type,
+        source=source,
+        effective_date=effective_date or None,
+    )
+
+    # 异步处理（后台任务）
+    import asyncio
+    asyncio.create_task(_run_ingestion(pipeline, task_id, tmp_path))
+
+    return {
+        "task_id": task_id,
+        "filename": file.filename,
+        "doc_type": doc_type,
+        "status": "pending",
+        "message": f"文档 {file.filename} 已提交解析",
+    }
+
+
+async def _run_ingestion(pipeline, task_id: str, tmp_path: str):
+    """后台执行解析任务"""
+    try:
+        import os
+        chunk_count = pipeline.run(task_id)
+        logger.info(f"后台解析完成: task={task_id[:8]}..., chunks={chunk_count}")
+    except Exception as e:
+        logger.error(f"后台解析失败: task={task_id[:8]}..., error={e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+@router.get("/knowledge/status/{task_id}")
+async def get_ingestion_status(task_id: str):
+    """查询文档解析任务状态"""
+    embedder = _create_embedder()
+    from src.knowledge.pgvector_store import PgvectorStore
+    from src.config import PG_CONN as _pg_conn
+    store = PgvectorStore(_pg_conn)
+    store.ensure_tables()
+    from src.knowledge.ingestion.pipeline import IngestionPipeline
+    pipeline = IngestionPipeline(store, embedder)
+    status = pipeline.get_status(task_id)
+    if status is None:
+        raise HTTPException(404, "任务不存在")
+    return status

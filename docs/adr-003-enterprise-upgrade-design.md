@@ -18,6 +18,7 @@
 | 07-24 | 3b | 软件工程重构 — graph.py 拆分为 state/prompts/nodes/graph 四文件 ✅ |
 | 07-24 | 3d | 审查修复 — 移除未使用导入LLM_BASE_URL + 修复_create_embedder的base_url泄漏 ✅ |
 | 07-24 | 4  | FAQ语义缓存 — FAQCache + Agent流式集成 + 5测试 (244 total) ✅ |
+| 07-24 | 5  | 文档上传+解析管道 — PDF/DOCX/TXT解析器 + 清洗器 + 异步任务 + API端点 + 13测试 (257 total) ✅ |
 | 07-24 | 4b | 步骤4审查 — 多维度质量检测: sources反序列化 + ask()缓存一致性 + hit_count精确更新 + 245测试 ✅ |
 | 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
