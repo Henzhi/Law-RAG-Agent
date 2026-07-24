@@ -11,9 +11,9 @@ from __future__ import annotations
 import logging
 
 from src.config import (
-    LLM_MODEL, LLM_BASE_URL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
+    LLM_MODEL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
     LLM_BACKEND, LLM_MAX_RETRIES,
-    EMBED_MODEL, EMBED_BASE_URL, EMBED_BATCH_SIZE, EMBED_MAX_RETRIES,
+    EMBED_MODEL, EMBED_BATCH_SIZE, EMBED_MAX_RETRIES,
     RETRIEVAL_TOP_K, RETRIEVAL_HYBRID_ENABLED,
     RERANK_ENABLED, RERANK_MODEL, RERANK_RECALL_K, RERANK_TOP_K,
     AGENT_MAX_RETRIES,
@@ -64,10 +64,11 @@ def _create_embedder():
     """根据配置创建 Embedding 实例（通过适配器兼容旧 API）
 
     根据 EMBED_BACKEND 环境变量自动选择后端（默认 ollama，独立于 LLM_BACKEND）。
+    base_url 等连接参数由工厂函数从环境变量读取，此处只传模型无关参数。
     """
     backend = create_embedding_backend(
         backend_type=None,  # 自动从环境变量读取
-        model=EMBED_MODEL, base_url=EMBED_BASE_URL,
+        model=EMBED_MODEL,
         batch_size=EMBED_BATCH_SIZE, max_retries=EMBED_MAX_RETRIES,
     )
     return EmbeddingAdapter(backend)
