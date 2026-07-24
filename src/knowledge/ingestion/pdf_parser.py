@@ -68,8 +68,18 @@ class PDFParser:
 
     def has_text(self, file_path: str) -> bool:
         """检测 PDF 是否包含可提取的文字（判断是否为扫描件）"""
-        import fitz
-        doc = fitz.open(str(file_path))
-        text = doc[0].get_text("text") if len(doc) > 0 else ""
+        try:
+            import fitz
+        except ImportError:
+            logger.warning("pymupdf 未安装，无法检测 PDF 文字")
+            return False
+        try:
+            doc = fitz.open(str(file_path))
+        except Exception:
+            return False
+        try:
+            text = doc[0].get_text("text") if len(doc) > 0 else ""
+        except IndexError:
+            text = ""
         doc.close()
         return len(text.strip()) > 50

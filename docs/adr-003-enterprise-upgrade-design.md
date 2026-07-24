@@ -19,6 +19,8 @@
 | 07-24 | 3d | 审查修复 — 移除未使用导入LLM_BASE_URL + 修复_create_embedder的base_url泄漏 ✅ |
 | 07-24 | 4  | FAQ语义缓存 — FAQCache + Agent流式集成 + 5测试 (244 total) ✅ |
 | 07-24 | 5  | 文档上传+解析管道 — PDF/DOCX/TXT解析器 + 清洗器 + 异步任务 + API端点 + 13测试 (257 total) ✅ |
+| 07-24 | 5d | 审查修复 — Bug1: 状态查询永远404(pipeline单例) + Bug2: batch_size缺失 + 未使用io导入 ✅ |
+| 07-24 | 5e | 步骤5审查 — 多维度质量检测: 缺失导入修复 + asyncio阻塞修复 + 编码回退 + 8项修复 + 258测试 ✅ |
 | 07-24 | 4b | 步骤4审查 — 多维度质量检测: sources反序列化 + ask()缓存一致性 + hit_count精确更新 + 245测试 ✅ |
 | 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
@@ -849,6 +851,34 @@ dependencies = [
 
 ---
 
+## 12. 步骤 3 审查记录 (2026-07-24)
+
+| # | 发现 | 严重 | 修复 |
+|---|------|------|------|
+| 1 | `_create_embedder` 将 `EMBED_BASE_URL` 传给工厂函数，切换 OpenAI Embedding 时 URL 泄漏 | 🟡中等 | 移除 base_url 参数，由工厂从 env 读取 |
+| 2 | `dependencies.py` 未使用导入 `LLM_BASE_URL` | 🟢轻微 | 已移除 |
+
+---
+
+## 13. 步骤 4 审查记录 (2026-07-24)
+
+| # | 发现 | 严重 | 修复 |
+|---|------|------|------|
+| 1 | `stream()` FAQ缓存未命中时缩进错误，跳过整个 RAG 流程返回闲聊回答 | 🔴致命 | 移除错误缩进的 4 行 |
+| 2 | 流程步骤注释编号重复 (2→2→3→4→5→6) | 🟢轻微 | 修正为 1→7 顺序编号 |
+
+---
+
+## 14. 步骤 5 审查记录 (2026-07-24)
+
+| # | 发现 | 严重 | 修复 |
+|---|------|------|------|
+| 1 | `get_ingestion_status` 每次新建 Pipeline（_tasks={}），永远返回 404 | 🔴致命 | 改为模块级单例 `_get_ingestion_pipeline()` |
+| 2 | `pipeline.run()` 调用 `self._embedder.batch_size`，`EmbeddingAdapter` 无此属性 | 🔴致命 | `EmbeddingAdapter.__init__` 添加 `self.batch_size` |
+| 3 | `pdf_parser.py` `import io` 未使用 | 🟢轻微 | 已移除 |
+
+---
+
 ## 12. 步骤 1f 审查记录 — 多维度安全审计 + 隐藏Bug检测 (2026-07-23)
 
 ### 12.1 审查维度
@@ -1103,3 +1133,82 @@ src/agents/
 | step 1a~4 原有 | 244 |
 | step 4b 修复 | +1 (无新增测试) |
 | **合计** | **245** |
+
+---
+
+## 16. 步骤 5e 审查记录 — 多维度质量检测 (2026-07-24)
+
+### 16.1 审查范围
+
+对步骤 5（文档上传+解析管道）的 11 个变更文件进行了 6 维度质量检测：
+
+| 维度 | 检查内容 | 检查文件数 |
+|------|----------|-----------|
+| 运行时正确性 | 导入完整性、asyncio 阻塞、方法存在性 | 3 |
+| 安全 | 文件上传、路径遍历、编码攻击、无鉴权端点 | 4 |
+| 数据完整性 | 分块逻辑、文本清洗、编码兼容 | 3 |
+| 并发 | 连接安全、状态共享、单例 | 2 |
+| 依赖完整性 | pyproject.toml、新依赖声明 | 1 |
+| 边界情况 | 空文档、扫描件、加密 PDF、超长段落 | 4 |
+
+### 16.2 发现清单
+
+#### 🔴 Critical — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 1 | **缺失导入：`UploadFile`/`File`/`Form`/`Path`** — `routes.py:318` 使用但 line 10 import 不包含，模块加载即抛 `NameError` | `routes.py` | **端点启动崩溃** | 补全 `from fastapi import ... UploadFile, File, Form` + `from pathlib import Path` |
+| 2 | **`logger` 未定义** — `routes.py:375` `_run_ingestion` 中 `logger.info()` 使用但路由模块无 `logger = logging.getLogger(...)` | `routes.py` | **后台任务崩溃** | 添加 `logger = logging.getLogger(__name__)` |
+| 3 | **`asyncio.create_task` 阻塞事件循环** — `pipeline.run()` 是同步函数（PDF 解析/分块/向量化），直接在 async task 调用会阻塞整个 FastAPI 服务 | `routes.py:359` | **全服务阻塞** | 改为 `asyncio.to_thread(_run_ingestion_sync, ...)`，后台在线程池执行 |
+| 4 | **缺少 `python-multipart` 依赖** — 文件上传端点需要 `python-multipart`，但 `pyproject.toml` 未声明 | `pyproject.toml` | **端点在无依赖环境下启动崩溃** | 添加 `python-multipart>=0.0.20` |
+
+#### 🟡 High — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 5 | **`.txt` 编码无回退** — `Path.read_text(encoding="utf-8")` 遇到 GBK/GB2312 编码的中文法律文档直接 `UnicodeDecodeError` | `pipeline.py:164` | GBK 文件解析失败 | UTF-8 失败时回退 `encoding="gbk"` |
+| 6 | **`_split_paragraphs` 尾句生成孤 `。`** — `para.split("。")` 在段落以 `。` 结尾时产生空串，`s.strip() + "。"` → 单独的 `"。"` 被写入 chunk | `pipeline.py:193-196` | 噪声块 | 空串跳过 `if not s: continue` |
+| 7 | **`has_text()` 缺少防御** — `import fitz` 无 try/except + `doc[0]` 在空文档时 `IndexError` | `pdf_parser.py:69-75` | 异常崩溃 | 添加 ImportError/IndexError/通用异常处理 |
+
+#### 🟢 Medium — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 8 | **`_HEADER_FOOTER` `.*?全文` 误杀** — 正则 `.*?全文$` 匹配所有以"全文"结尾的行，包括 `《刑法》全文` 等合法内容 | `text_cleaner.py:29` | 误删合法文本 | 移除 `\|.*?全文` 分支，仅保留精确页眉模式 |
+
+#### 🟢 Low — 已知不修
+
+| # | 发现 | 模块 | 说明 |
+|---|------|------|------|
+| 9 | **上传端点无鉴权** — `/knowledge/upload` 未挂 `Depends(get_current_user)` | `routes.py:316` | MVP 阶段可接受，步骤 7 补 |
+| 10 | **未验证文件内容类型** — 仅检查扩展名，攻击者可上传 `.exe` 重命名为 `.pdf` | `routes.py:332-335` | 解析器会优雅失败，无需额外防御 |
+| 11 | **`parse()`/`parse_bytes()` 代码重复** — `docx_parser` 和 `pdf_parser` 中两版 `parse_bytes` 与 `parse` 有重复 | `docx_parser.py` `pdf_parser.py` | Phase 2 抽取公共抽象 |
+| 12 | **`_ingestion_pipeline` 单例无线程安全** — 同 `dependencies.py` 中已知问题 | `routes.py:299` | 同步骤 1f 发现 #10 |
+
+### 16.3 SQL 注入与路径遍历审查
+
+| 文件 | 检查项 | 安全性 |
+|------|--------|--------|
+| `pipeline.py:105-110` | `ensure_document()` 参数均来自 task dict (内部可控) | ✅ 安全 |
+| `pipeline.py:125` | `insert_chunks()` 参数化查询 | ✅ 安全 |
+| `routes.py:316-366` | 文件上传使用 `tempfile.NamedTemporaryFile` + 扩展名白名单 | ✅ 安全 |
+
+### 16.4 asyncio 阻塞修复说明
+
+```
+修复前:
+  asyncio.create_task(_run_ingestion(...))      # async def → sync run() 阻塞事件循环
+
+修复后:
+  asyncio.create_task(asyncio.to_thread(         # 线程池执行，事件循环不阻塞
+      _run_ingestion_sync, pipeline, task_id, tmp_path
+  ))
+```
+
+### 16.5 步骤 5e 累计测试数
+
+| 来源 | 测试数 |
+|------|--------|
+| step 1a~5 原有 | 257 |
+| step 5e 修复（python-multipart 安装后 test_health 恢复） | +1 |
+| **合计** | **258** |

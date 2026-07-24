@@ -6,8 +6,9 @@ from __future__ import annotations
 import json
 import time
 import logging
+from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from .dependencies import get_engine, get_agent, _create_embedder
@@ -21,6 +22,7 @@ from src.llm.client import Message
 router = APIRouter()
 auth_router = APIRouter()
 perf_logger = logging.getLogger("api.perf")
+logger = logging.getLogger(__name__)
 
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
@@ -355,8 +357,8 @@ async def upload_document(
         effective_date=effective_date or None,
     )
 
-    # 后台异步处理
-    asyncio.create_task(_run_ingestion(pipeline, task_id, tmp_path))
+    # 后台异步处理 — to_thread 避免同步解析阻塞事件循环
+    asyncio.create_task(asyncio.to_thread(_run_ingestion_sync, pipeline, task_id, tmp_path))
 
     return {
         "task_id": task_id,
@@ -367,10 +369,10 @@ async def upload_document(
     }
 
 
-async def _run_ingestion(pipeline, task_id: str, tmp_path: str):
-    """后台执行解析任务"""
+def _run_ingestion_sync(pipeline, task_id: str, tmp_path: str):
+    """后台同步执行解析任务（运行在 asyncio.to_thread 线程中）"""
+    import os
     try:
-        import os
         chunk_count = pipeline.run(task_id)
         logger.info(f"后台解析完成: task={task_id[:8]}..., chunks={chunk_count}")
     except Exception as e:

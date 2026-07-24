@@ -161,7 +161,11 @@ class IngestionPipeline:
         elif ext == ".docx":
             return self._docx_parser.parse(file_path)
         elif ext == ".txt":
-            return Path(file_path).read_text(encoding="utf-8")
+            # 中文法律文档常见 GBK/GB2312 编码，先试 UTF-8，失败回退 GBK
+            try:
+                return Path(file_path).read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return Path(file_path).read_text(encoding="gbk")
         else:
             raise ValueError(f"不支持的文件类型: {ext}")
 
@@ -193,7 +197,10 @@ class IngestionPipeline:
                 sentences = para.split("。")
                 buf = ""
                 for s in sentences:
-                    s = s.strip() + "。"
+                    s = s.strip()
+                    if not s:
+                        continue  # 跳过句号产生的空串（如段落以"。"结尾）
+                    s += "。"
                     if len(buf) + len(s) > max_chars and buf:
                         chunks.append({
                             "doc_id": doc_id,
