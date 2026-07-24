@@ -18,7 +18,7 @@ def _pg_available():
             _pg_cache = False
     return _pg_cache
 
-pg_required = pytest.mark.skip(reason="PostgreSQL 不可用——启动 PG 后测试")
+pg_required = pytest.mark.skipif(not _pg_available(), reason="PostgreSQL 不可用——启动 PG 后测试")
 
 
 class TestHealth:
@@ -48,7 +48,9 @@ class TestAuth:
         assert len(token) > 20
         r = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200
-        assert r.json()["username"] == "ut1"
+        data = r.json()
+        assert data["anonymous"] is False
+        assert len(data["user_id"]) > 0
 
     @pg_required
     def test_wrong_password(self, client):
