@@ -146,7 +146,7 @@ class LawAgentGraph:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
         yield {"type": "thinking", "content": "🔧 正在初始化 Agent..."}
 
-        # 1. 意图识别（三分类）
+        # 1. 意图识别
         query_type = classify_query_type(query)
         is_legal = query_type != "casual"
         type_label = {"law_lookup": "法律条文查询", "case_query": "案例检索", "casual": "闲聊"}
@@ -206,7 +206,7 @@ class LawAgentGraph:
             else:
                 yield {"type": "thinking", "content": "📝 使用原始查询"}
 
-            # 5. Retrieve（按意图路由文档类型）
+            # 5. Retrieve
             yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
             state.update(self._nodes["retrieve"](state))
             docs = state.get("retrieved_docs", [])
@@ -235,9 +235,14 @@ class LawAgentGraph:
                     hist.append(LLMMessage("user" if r == "human" else "assistant" if r == "ai" else r, c))
 
             answer_raw = ""
-            for token in self.llm.chat_stream(prompt, history=hist if hist else None):
-                yield {"type": "token", "content": token}
-                answer_raw += token
+            try:
+                stream = self.llm.chat_stream(prompt, history=hist if hist else None)
+                for token in stream:
+                    yield {"type": "token", "content": token}
+                    answer_raw += token
+            except Exception as e:
+                logger.error(f"流式生成异常: {e}", exc_info=True)
+                answer_raw = ""
             state["answer"] = answer_raw.strip() or "(未能生成回答)"
 
             # 7. Validate

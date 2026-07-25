@@ -195,7 +195,8 @@ class PgvectorStore:
         self._ensure_connection()
 
         conditions = []
-        params = []
+        # params 顺序必须匹配 SQL: SELECT %s → WHERE %s ... → ORDER BY %s → LIMIT %s
+        params = [query_vec]  # SELECT 子句中的向量
 
         # embedding_model 过滤
         if embedding_model:
@@ -213,8 +214,9 @@ class PgvectorStore:
 
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        # 向量参数
-        params.extend([query_vec, query_vec, top_k])
+        # ORDER BY 向量 + LIMIT
+        params.append(query_vec)
+        params.append(top_k)
 
         with self._conn.cursor() as cur:
             cur.execute(
