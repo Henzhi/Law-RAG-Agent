@@ -64,8 +64,8 @@ class RerankRetriever(BaseRetriever):
         self._recall_k = recall_k
         self._top_k = top_k
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
-        candidates = self._base.search(query, top_k=self._recall_k)
+    def search(self, query: str, top_k: int = 5, **kwargs) -> list[RetrievedDoc]:
+        candidates = self._base.search(query, top_k=self._recall_k, **kwargs)
         return self._reranker.rerank(query, candidates, top_k=top_k or self._top_k)
 
     def is_ready(self) -> bool:

@@ -44,8 +44,8 @@ class AdjacentExpander(BaseRetriever):
     # 公开接口
     # ------------------------------------------------------------------
 
-    def search(self, query: str, top_k: int = 5) -> list[RetrievedDoc]:
-        results = self._base.search(query, top_k=top_k)
+    def search(self, query: str, top_k: int = 5, **kwargs) -> list[RetrievedDoc]:
+        results = self._base.search(query, top_k=top_k, **kwargs)
         return self._expand(results)
 
     def is_ready(self) -> bool:
