@@ -25,6 +25,7 @@ from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
 from src.rag.intent import classify_intent, classify_query_type
 from src.llm.client import Message as LLMMessage
+from src.memory.hallucination_guard import HallucinationGuard
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,19 @@ class LawAgentGraph:
             "memory_context": "",
             "user_id": user_id,
         }
-        return self._graph.invoke(initial)
+        result = self._graph.invoke(initial)
+
+        # 幻觉防御（ask() 路径与 stream() 行为对齐）
+        if query_type != "casual":
+            guard_result = HallucinationGuard.guard(
+                result.get("retrieved_docs", []),
+                result.get("answer", ""),
+            )
+            if guard_result["blocked"]:
+                logger.warning(f"ask() 回答被拦截: {guard_result['reason']}")
+                result["answer"] = guard_result["fallback"]
+
+        return result
 
     def stream(self, query: str, history: list[dict] | None = None, user_id: str = "") -> Iterator[dict]:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
@@ -233,9 +246,9 @@ class LawAgentGraph:
             if state.get("validation_passed", True):
                 yield {"type": "thinking", "content": "✅ 审核通过"}
                 # 幻觉防御：检索置信度 + 内容安全
-                from src.memory.hallucination_guard import HallucinationGuard
                 guard_result = HallucinationGuard.guard(docs, state["answer"])
                 if guard_result["blocked"]:
+                    yield {"type": "clear", "content": ""}
                     yield {"type": "token", "content": guard_result["fallback"]}
                     yield {"type": "thinking", "content": f"⚠️ 回答已拦截: {guard_result['reason']}"}
                     return

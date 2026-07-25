@@ -9,18 +9,29 @@
 from __future__ import annotations
 
 import logging
-import re
+import os
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _safe_float_env(key: str, default: float) -> float:
+    try:
+        return float(os.getenv(key, str(default)))
+    except (ValueError, TypeError):
+        return default
+
+
 # 检索最低相似度阈值（低于此值的检索结果不可靠）
-MIN_SIMILARITY = 0.7
+# 可通过环境变量 HALLUCINATION_MIN_SIM 覆盖
+MIN_SIMILARITY = _safe_float_env("HALLUCINATION_MIN_SIM", 0.7)
 
 # 输出敏感词（涉黄/涉政/违法犯罪方法）
+# 注：仅过滤明确教唆行为的短语，不阻断合法法律讨论
+# （如"黑客入侵构成什么罪"是合法法律咨询）
 _OUTPUT_BLOCKED = [
-    "黑客", "入侵", "破解", "刷机", "越狱", "翻墙",
-    "制造枪支", "制造炸弹", "制毒", "洗钱",
+    "教你如何黑客", "如何入侵系统", "如何破解密码", "教你怎么刷机",
+    "制造枪支的方法", "制造炸弹的方法", "制毒方法", "如何洗钱",
     "裸聊", "约炮", "嫖娼",
 ]
 

@@ -22,6 +22,7 @@
 | 07-24 | 5d | 审查修复 — Bug1: 状态查询永远404(pipeline单例) + Bug2: batch_size缺失 + 未使用io导入 ✅ |
 | 07-24 | 6  | 意图识别增强+知识库扩展 — classify_query_type三分类 + doc_type路由检索 + 8测试 (265 total) ✅ |
 | 07-25 | 7  | Token预算+幻觉防御+可观测性 — TokenBudget + HallucinationGuard + QueryLogger + 22测试 (287 total) ✅ |
+| 07-25 | 7b | 步骤7审查 — 多维度安全+集成检测: ask()缺失防御 + 内容安全后置 + 关键词误杀 + MIN_SIM阈值硬编码 + 6项修复 ✅ |
 | 07-24 | 6b | 步骤6审查 — 多维度质量检测: retriever签名兼容 + sanitize结果使用 + dead regex清理 + 269测试 ✅ |
 | 07-25 | 6c | 回归修复 — _CASE_KEYWORDS 原子化拆分，恢复「有没有{任意}案子」等真实问句匹配能力 ✅ |
 | 07-24 | 5e | 步骤5审查 — 多维度质量检测: 缺失导入修复 + asyncio阻塞修复 + 编码回退 + 8项修复 + 258测试 ✅ |
@@ -1305,3 +1306,92 @@ src/agents/
 | `类似打人该怎么判` | law_lookup ❌ | case_query ✅ |
 | `工伤怎么认定` | law_lookup ✅ | law_lookup ✅ (无变化) |
 | `你好` | casual ✅ | casual ✅ (无变化) |
+
+---
+
+## 18. 步骤 7b 审查记录 — 多维度安全 + 集成检测 (2026-07-25)
+
+### 18.1 审查范围
+
+对步骤 7（Token 预算 + 幻觉防御 + 可观测性）的 8 个变更文件进行了 6 维度检测：
+
+| 维度 | 检查内容 | 检查文件数 |
+|------|----------|-----------|
+| 安全 | 内容检查执行时序、ask 路径防御缺失、关键词误杀 | 3 |
+| 集成完整性 | TokenBudget/QueryLogger 是否接入 agent、死依赖 | 4 |
+| 配置 | 硬编码阈值、环境变量 | 1 |
+| 路径一致性 | ask() vs stream() 防御对等 | 2 |
+| 包完整性 | `__init__.py` 存在性 | 1 |
+| 代码规范 | 函数体内 import、未使用 import | 2 |
+
+### 18.2 发现清单
+
+#### 🔴 Critical — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 1 | **`ask()` 路径无幻觉防御** — `stream()` 有 `HallucinationGuard.guard()`，`ask()` 无，非流式请求绕过多层防御 | `graph.py:98-113` | **防护缺口** | `ask()` 在 `_graph.invoke()` 后追加 `HallucinationGuard.guard()` |
+| 2 | **内容安全检查后置** — `stream()` 先 `yield token` 流式输出全部回答，再调 `check_content_safety()`，不安全内容已送达用户 | `graph.py:225-241` | **不安全内容已外泄** | block 时 `yield {"type":"clear"}` 清除前端 + fallback |
+
+#### 🟡 High — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 3 | **`_OUTPUT_BLOCKED` 过度激进** — `"黑客"`/`"入侵"`/`"破解"` 等单字关键词直接阻断，"黑客入侵构成什么罪"是合法法律咨询 | `hallucination_guard.py:22` | **合法查询误杀** | 单字词改为完整教唆短语：`"教你如何黑客"`/`"如何入侵系统"` |
+| 4 | **`MIN_SIMILARITY = 0.7` 硬编码** — 不同 embedding 模型阈值不同，bge-m3 需要 0.7，OpenAI text-embedding 可能需要 0.8 | `hallucination_guard.py:23` | 配置僵化 | 支持 `HALLUCINATION_MIN_SIM` 环境变量覆盖 |
+| 5 | **`from ... HallucinationGuard` 在函数体内** — `stream()` 每个请求执行一次 import | `graph.py:236` | 微性能 | 提升到模块顶部 |
+
+#### 🟢 Medium — 已修复
+
+| # | 发现 | 模块 | 影响 | 修复 |
+|---|------|------|------|------|
+| 6 | **`src/observability/` 缺少 `__init__.py`** | `observability/` | 非标准包 | 创建 `__init__.py` |
+
+#### 🟢 Low — 已知不修 (阶段性)
+
+| # | 发现 | 模块 | 说明 |
+|---|------|------|------|
+| 7 | **TokenBudget 未集成** — 完整的 Token 预算管理器已实现，但未接入 `nodes.py:generate` 的 prompt 构建 | `token_budget.py` | 步骤 8 集成 |
+| 8 | **QueryLogger 未集成** — 链路追踪模块完整，但 `graph.py`/`routes.py` 均未使用 | `query_log.py` | 步骤 8 集成 |
+| 9 | **`structlog>=26.1.0` 死依赖** — 已声明但无代码引用 | `pyproject.toml` | 步骤 8 预埋 |
+| 10 | **`QueryLogger._save()` 每次新建连接** — `psycopg2.connect()` 每次写入创建/关闭，高并发下连接风暴 | `query_log.py:103` | 步骤 8 加连接池 |
+
+### 18.3 安全时间线对比
+
+**修复前** — 不安全内容的传输时序：
+
+```
+stream token "教你如何黑客入侵系统"  → 前端展示
+... 更多 token ...
+yield {"type": "thinking", "✅ 审核通过"}
+check_content_safety("教你如何黑客入侵系统...")  ← 为时已晚
+→ 拦截，yield fallback
+```
+
+**修复后**：
+
+```
+stream token "教你如何黑客入侵系统"  → 前端展示
+... 更多 token ...
+yield {"type": "thinking", "✅ 审核通过"}
+check_content_safety("教你如何黑客入侵系统...")
+→ 拦截 → yield {"type": "clear"} → yield fallback  ← 清除 + 替换
+```
+
+> 注：流式场景下内容安全为 best-effort 后置防御。生产环境建议在步骤 8 配合 TokenBudget 做前置过滤。
+
+### 18.4 ask/stream 防御对等矩阵
+
+| 防御层 | ask() | stream() |
+|--------|-------|----------|
+| 检索置信度 (MIN_SIM) | ✅ 修复后 | ✅ 已有 |
+| 内容安全检查 | ✅ 修复后 | ✅ 已有 (后置) |
+| Prompt 注入 (sanitize_input) | ✅ (路由层) | ✅ (路由层) |
+
+### 18.5 步骤 7b 累计测试数
+
+| 来源 | 测试数 |
+|------|--------|
+| step 1a~7 原有 | 287 |
+| step 7b 修复 (+`__init__.py` 使 observability 包可用) | +1 |
+| **合计** | **288** |
