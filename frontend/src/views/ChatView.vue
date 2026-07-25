@@ -113,6 +113,7 @@ async function loadCurrentSession() {
       const lastMsg = chat.messages[chat.messages.length - 1]
       if (lastMsg?.role === 'assistant' && lastMsg.thinking?.length) {
         thinkingTraces.value = [...lastMsg.thinking]
+        thinkingOpen.value = true  // 加载历史时保持思考过程可见
       }
       answered.value = true
       await nextTick()

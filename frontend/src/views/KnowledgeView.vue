@@ -56,8 +56,8 @@
         </div>
         <div class="progress-bar" v-if="taskProgress > 0">
           <div class="progress-fill" :style="{ width: taskProgress + '%' }"></div>
-          <span>{{ taskProgress }}%</span>
         </div>
+        <div class="progress-text" v-if="taskProgress > 0">{{ taskProgress }}%</div>
         <button v-if="taskDone" class="btn-refresh" @click="$router.push('/')">去问答</button>
       </div>
     </div>
@@ -85,10 +85,29 @@ const taskStatusText = computed(() => ({
   embedding: '向量化中', indexing: '索引中', done: '完成', failed: '失败'
 }[taskStatus.value] || taskStatus.value))
 
+const ALLOWED_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']
+const MAX_SIZE = 50 * 1024 * 1024 // 50MB
+
 function onFileChange(e) {
-  file.value = e.target.files[0] || null
+  const f = e.target.files[0] || null
   uploadError.value = ''
   uploadOk.value = ''
+  if (!f) { file.value = null; return }
+  // 类型校验
+  if (!ALLOWED_TYPES.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
+    uploadError.value = '仅支持 PDF、DOCX、TXT 文件'
+    file.value = null
+    e.target.value = ''
+    return
+  }
+  // 大小校验
+  if (f.size > MAX_SIZE) {
+    uploadError.value = `文件过大（${(f.size / 1024 / 1024).toFixed(1)}MB），最大 50MB`
+    file.value = null
+    e.target.value = ''
+    return
+  }
+  file.value = f
 }
 
 async function handleUpload() {
@@ -153,8 +172,8 @@ function pollStatus() {
 .task-status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--color-primary-light); color: var(--color-primary-dark); }
 .task-status.done { background: #D1FAE5; color: #065F46; }
 .task-status.failed { background: #FEE2E2; color: #991B1B; }
-.progress-bar { height: 8px; background: var(--color-border); border-radius: 4px; overflow: hidden; display: flex; align-items: center; gap: 8px; }
+.progress-bar { height: 8px; background: var(--color-border); border-radius: 4px; overflow: hidden; }
 .progress-fill { height: 100%; background: var(--color-primary); border-radius: 4px; transition: width 0.5s ease; }
-.progress-bar span { font-size: 12px; color: var(--color-text-muted); }
+.progress-text { font-size: 12px; color: var(--color-text-muted); text-align: right; margin-top: 4px; }
 .btn-refresh { padding: 6px 16px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); cursor: pointer; font-size: 14px; }
 </style>
