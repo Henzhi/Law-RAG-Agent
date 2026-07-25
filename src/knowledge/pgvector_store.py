@@ -130,6 +130,7 @@ class PgvectorStore:
         Returns:
             写入的块数量
         """
+        import json as _json
         self._ensure_connection()
         total = 0
         for i in range(0, len(chunks), batch_size):
@@ -137,7 +138,10 @@ class PgvectorStore:
             with self._conn.cursor() as cur:
                 for c in batch:
                     embedding = c["embedding"]
-                    # halfvec 直接存 float 列表，PG 会自动转换
+                    meta = c.get("metadata", {})
+                    # dict → JSON 字符串，PG 自动转 JSONB
+                    if isinstance(meta, dict):
+                        meta = _json.dumps(meta, ensure_ascii=False)
                     cur.execute(
                         "INSERT INTO document_chunks "
                         "(doc_id, chunk_type, content, embedding_model, embedding, metadata) "
@@ -148,7 +152,7 @@ class PgvectorStore:
                             c["content"],
                             embedding_model,
                             embedding,
-                            c.get("metadata", {}),
+                            meta,
                         ),
                     )
             self._conn.commit()

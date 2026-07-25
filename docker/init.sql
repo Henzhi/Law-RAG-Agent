@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     content         TEXT NOT NULL,                               -- 块的文本内容（以「条」为单位）
     embedding_model VARCHAR(50) NOT NULL,                        -- 向量化模型标识（如 "bge-m3"、"ollama:bge-m3"）
                                                                  -- 查询时 WHERE embedding_model = current 实现模型隔离
-    embedding       HALFVEC(3072),                               -- 文本向量（半精度，3072 维为业内最大模型预留）
+    embedding       HALFVEC(1024),                               -- 文本向量（半精度，bge-m3=1024维）
                                                                  -- 1024 维模型写入时 PG 自动补零适配
     metadata        JSONB,                                       -- 结构化元数据:
                                                                  --   {law_name, chapter, section, article_range, chunk_type}
@@ -155,7 +155,7 @@ COMMENT ON COLUMN document_chunks.created_at IS '写入时间';
 CREATE TABLE IF NOT EXISTS faq_cache (
     id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 缓存条目 ID
     question        TEXT NOT NULL,                               -- 用户原始问题
-    question_embed  HALFVEC(3072),                               -- 问题向量（用于语义相似度匹配）
+    question_embed  HALFVEC(1024),                               -- 问题向量（用于语义相似度匹配）
     answer          TEXT NOT NULL,                               -- 缓存的完整答案
     sources         JSONB,                                       -- 引用来源 [{law_name, article_range, score}, ...]
     related_laws    TEXT[],                                      -- 关联法律 ID 列表（修法时级联失效）
@@ -196,7 +196,7 @@ CREATE TABLE IF NOT EXISTS conversation_memories (
     user_id         VARCHAR(128) NOT NULL,                       -- 所属用户
     session_id      VARCHAR(128) NOT NULL,                       -- 原始会话 ID
     summary         TEXT,                                        -- LLM 生成的对话摘要（结构化）
-    summary_embed   HALFVEC(3072),                               -- 摘要向量（用于语义检索历史对话）
+    summary_embed   HALFVEC(1024),                               -- 摘要向量（用于语义检索历史对话）
     entities        JSONB,                                       -- 关键实体: {case_type, laws_involved, key_facts, ...}
     message_count   INT DEFAULT 0,                               -- 原始对话轮数
     created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
