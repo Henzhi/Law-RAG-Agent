@@ -33,13 +33,25 @@
 
     <!-- Context menu -->
     <div v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
-      <button @click="doDelete">删除对话</button>
+      <button @click="askDelete">删除对话</button>
+    </div>
+
+    <!-- 删除确认弹窗（替代原生 confirm，避免部分环境被禁用/抛错） -->
+    <div v-if="confirmOpen" class="modal-mask" @click.self="cancelDelete">
+      <div class="modal">
+        <p class="modal-title">确定删除此对话？</p>
+        <p class="modal-desc">删除后该对话的历史记录将无法恢复。</p>
+        <div class="modal-actions">
+          <button class="btn-cancel" @click="cancelDelete">取消</button>
+          <button class="btn-danger" @click="confirmDelete">删除</button>
+        </div>
+      </div>
     </div>
   </aside>
 </template>
 
 <script setup>
-import { reactive, onMounted, onUnmounted } from 'vue'
+import { reactive, ref, onMounted, onUnmounted } from 'vue'
 
 defineProps({
   sessions: { type: Array, default: () => [] },
@@ -49,6 +61,7 @@ defineProps({
 const emit = defineEmits(['new-chat', 'select', 'toggle', 'delete'])
 
 const ctxMenu = reactive({ visible: false, x: 0, y: 0, session: null })
+const confirmOpen = ref(false)
 
 function onContextMenu(e, session) {
   ctxMenu.visible = true
@@ -57,11 +70,19 @@ function onContextMenu(e, session) {
   ctxMenu.session = session
 }
 function closeMenu() { ctxMenu.visible = false }
-function doDelete() {
-  if (ctxMenu.session && confirm('确定删除此对话？')) {
+function askDelete() {
+  // 先收起右键菜单，再弹出可靠的内部确认框
+  closeMenu()
+  confirmOpen.value = true
+}
+function cancelDelete() {
+  confirmOpen.value = false
+}
+function confirmDelete() {
+  confirmOpen.value = false
+  if (ctxMenu.session) {
     emit('delete', ctxMenu.session.session_id)
   }
-  closeMenu()
 }
 onMounted(() => document.addEventListener('click', closeMenu))
 onUnmounted(() => document.removeEventListener('click', closeMenu))
@@ -173,4 +194,38 @@ onUnmounted(() => document.removeEventListener('click', closeMenu))
   text-align: left;
 }
 .ctx-menu button:hover { background: rgba(239,68,68,0.15); }
+
+/* 删除确认弹窗 */
+.modal-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal {
+  width: 300px;
+  background: #1F2937;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 20px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+}
+.modal-title { margin: 0 0 8px; font-size: 15px; color: #F3F4F6; font-weight: 600; }
+.modal-desc { margin: 0 0 18px; font-size: 13px; color: #9CA3AF; line-height: 1.5; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; }
+.modal-actions button {
+  padding: 7px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.btn-cancel { background: transparent; border-color: #4B5563; color: #D1D5DB; }
+.btn-cancel:hover { background: rgba(255, 255, 255, 0.06); }
+.btn-danger { background: #DC2626; color: #fff; }
+.btn-danger:hover { background: #B91C1C; }
 </style>

@@ -24,7 +24,7 @@ def _safe_float_env(key: str, default: float) -> float:
 
 # 检索最低相似度阈值（低于此值的检索结果不可靠）
 # 可通过环境变量 HALLUCINATION_MIN_SIM 覆盖
-MIN_SIMILARITY = _safe_float_env("HALLUCINATION_MIN_SIM", 0.65)
+MIN_SIMILARITY = _safe_float_env("HALLUCINATION_MIN_SIM", 0.4)
 
 # 输出敏感词（涉黄/涉政/违法犯罪方法）
 # 注：仅过滤明确教唆行为的短语，不阻断合法法律讨论

@@ -202,9 +202,12 @@ async function handleSelect(sessionId) {
 async function handleDelete(sessionId) {
   try {
     await deleteConversation(sessionId)
-    refreshSessions()
+    await refreshSessions()
     if (chat.sessionId === sessionId) handleNewChat()
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.error('删除会话失败:', e)
+    alert('删除会话失败：' + (e?.message || e))
+  }
 }
 
 function doLogout() {
