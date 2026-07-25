@@ -254,6 +254,15 @@ def save_session(session_id: str, body: dict, user_id: str = Depends(get_current
     return {"ok": True}
 
 
+@router.delete("/conversations/{session_id}")
+def delete_session(session_id: str, user_id: str = Depends(get_current_user)):
+    """删除指定会话"""
+    from .conversation_store import get_conversation_store
+    store = get_conversation_store()
+    store.delete_session(user_id=user_id, session_id=session_id)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------
 # 认证路由
 # ------------------------------------------------------------------
