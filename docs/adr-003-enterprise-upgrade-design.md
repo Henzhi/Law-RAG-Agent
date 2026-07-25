@@ -21,6 +21,7 @@
 | 07-24 | 5  | 文档上传+解析管道 — PDF/DOCX/TXT解析器 + 清洗器 + 异步任务 + API端点 + 13测试 (257 total) ✅ |
 | 07-24 | 5d | 审查修复 — Bug1: 状态查询永远404(pipeline单例) + Bug2: batch_size缺失 + 未使用io导入 ✅ |
 | 07-24 | 6  | 意图识别增强+知识库扩展 — classify_query_type三分类 + doc_type路由检索 + 8测试 (265 total) ✅ |
+| 07-25 | 7  | Token预算+幻觉防御+可观测性 — TokenBudget + HallucinationGuard + QueryLogger + 22测试 (287 total) ✅ |
 | 07-24 | 6b | 步骤6审查 — 多维度质量检测: retriever签名兼容 + sanitize结果使用 + dead regex清理 + 269测试 ✅ |
 | 07-25 | 6c | 回归修复 — _CASE_KEYWORDS 原子化拆分，恢复「有没有{任意}案子」等真实问句匹配能力 ✅ |
 | 07-24 | 5e | 步骤5审查 — 多维度质量检测: 缺失导入修复 + asyncio阻塞修复 + 编码回退 + 8项修复 + 258测试 ✅ |

@@ -232,6 +232,13 @@ class LawAgentGraph:
             state.update(self._nodes["validate"](state))
             if state.get("validation_passed", True):
                 yield {"type": "thinking", "content": "✅ 审核通过"}
+                # 幻觉防御：检索置信度 + 内容安全
+                from src.memory.hallucination_guard import HallucinationGuard
+                guard_result = HallucinationGuard.guard(docs, state["answer"])
+                if guard_result["blocked"]:
+                    yield {"type": "token", "content": guard_result["fallback"]}
+                    yield {"type": "thinking", "content": f"⚠️ 回答已拦截: {guard_result['reason']}"}
+                    return
                 # 校验通过 → 存入 FAQ 缓存
                 if self._faq_cache:
                     try:
