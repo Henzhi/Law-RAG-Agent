@@ -30,6 +30,24 @@ export const loadHistory = (sessionId) =>
 export const saveSession = (sessionId, messages) =>
   fetch(`${BASE}/conversations/${sessionId}`, { method: 'POST', headers: authHeaders(), body: JSON.stringify({ messages }) }).then(r => { if (!r.ok) throw new Error('会话保存失败') })
 
+export const deleteConversation = (sessionId) =>
+  fetch(`${BASE}/conversations/${sessionId}`, { method: 'DELETE', headers: authHeaders() }).then(r => { if (!r.ok) throw new Error('删除失败') })
+
+// Knowledge
+export const uploadDocument = async (file, docType, source, effectiveDate) => {
+  const fd = new FormData()
+  fd.append('file', file)
+  fd.append('doc_type', docType)
+  fd.append('source', source)
+  fd.append('effective_date', effectiveDate)
+  const resp = await fetch(`${BASE}/knowledge/upload`, { method: 'POST', headers: { Authorization: authHeaders().Authorization }, body: fd })
+  if (!resp.ok) throw new Error('上传失败')
+  return resp.json()
+}
+
+export const getIngestionStatus = (taskId) =>
+  fetch(`${BASE}/knowledge/status/${taskId}`, { headers: authHeaders() }).then(handleError)
+
 // Chat Stream
 export async function* streamChat(query, history, sessionId) {
   const resp = await fetch(`${BASE}/chat/stream`, {

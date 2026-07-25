@@ -22,6 +22,7 @@
 | 07-24 | 5d | 审查修复 — Bug1: 状态查询永远404(pipeline单例) + Bug2: batch_size缺失 + 未使用io导入 ✅ |
 | 07-24 | 6  | 意图识别增强+知识库扩展 — classify_query_type三分类 + doc_type路由检索 + 8测试 (265 total) ✅ |
 | 07-25 | 7  | Token预算+幻觉防御+可观测性 — TokenBudget + HallucinationGuard + QueryLogger + 22测试 (287 total) ✅ |
+| 07-25 | 8  | 前端新页面 — KnowledgeView(知识库上传) + HistoryView(对话历史) + 路由 + API ✅ |
 | 07-25 | 7b | 步骤7审查 — 多维度安全+集成检测: ask()缺失防御 + 内容安全后置 + 关键词误杀 + MIN_SIM阈值硬编码 + 6项修复 ✅ |
 | 07-24 | 6b | 步骤6审查 — 多维度质量检测: retriever签名兼容 + sanitize结果使用 + dead regex清理 + 269测试 ✅ |
 | 07-25 | 6c | 回归修复 — _CASE_KEYWORDS 原子化拆分，恢复「有没有{任意}案子」等真实问句匹配能力 ✅ |

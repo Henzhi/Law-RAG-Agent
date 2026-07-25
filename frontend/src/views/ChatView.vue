@@ -18,6 +18,8 @@
           <h1>Law-RAG-Agent</h1>
           <span class="badge">Qwen2.5:7B</span>
           <span class="badge">FAISS</span>
+          <router-link to="/knowledge" class="nav-link">知识库</router-link>
+          <router-link to="/history" class="nav-link">历史</router-link>
         </div>
         <div class="header-right">
           <span class="username">{{ auth.username }}</span>
@@ -227,6 +229,8 @@ function doLogout() {
   font-size: 12px;
 }
 .header-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
+.nav-link { font-size: 13px; padding: 4px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); color: var(--color-text-muted); text-decoration: none; transition: var(--transition); }
+.nav-link:hover { background: var(--color-primary-light); color: var(--color-primary-dark); }
 .username { font-size: 13px; color: #C4B5FD; }
 .btn-logout {
   background: none;
