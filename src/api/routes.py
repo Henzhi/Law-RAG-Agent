@@ -401,3 +401,50 @@ async def get_ingestion_status(task_id: str):
     if status is None:
         raise HTTPException(404, "任务不存在")
     return status
+
+
+# ---------------------------------------------------------------------------
+# 5. 知识库 — 文档管理
+# ---------------------------------------------------------------------------
+
+def _get_store():
+    """获取 pgvector store 单例"""
+    from src.knowledge.pgvector_store import PgvectorStore
+    from src.config import PG_CONN as _pg_conn
+    store = PgvectorStore(_pg_conn)
+    store.ensure_tables()
+    return store
+
+
+@router.get("/knowledge/documents")
+def list_knowledge_documents(doc_type: str | None = None):
+    """列出知识库中的所有文档
+
+    Query:
+        doc_type: 按类型过滤 (law/interpretation/case/regulation)，不传则返回全部
+    """
+    store = _get_store()
+    docs = store.list_documents(doc_type=doc_type)
+    return {"documents": docs, "total": len(docs)}
+
+
+@router.delete("/knowledge/documents/{doc_id}")
+def delete_knowledge_document(doc_id: str):
+    """删除文档及其所有向量块"""
+    store = _get_store()
+    ok = store.delete_document(doc_id)
+    if not ok:
+        raise HTTPException(404, "文档不存在")
+    # 删除后重建索引
+    store.reindex()
+    return {"ok": True, "message": f"文档 {doc_id[:8]}... 已删除"}
+
+
+@router.get("/knowledge/documents/{doc_id}/chunks")
+def get_document_chunks(doc_id: str):
+    """获取文档的所有文本块"""
+    store = _get_store()
+    chunks = store.get_document_chunks(doc_id)
+    if not chunks:
+        raise HTTPException(404, "文档不存在或无内容")
+    return {"doc_id": doc_id, "chunks": chunks, "total": len(chunks)}

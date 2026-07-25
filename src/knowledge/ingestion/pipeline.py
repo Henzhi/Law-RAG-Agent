@@ -119,7 +119,7 @@ class IngestionPipeline:
             for i in range(0, len(chunks), self._embedder.batch_size):
                 batch = chunks[i:i + self._embedder.batch_size]
                 texts = [c["content"] for c in batch]
-                embeddings = self._embedder.embed(texts)
+                embeddings = self._embedder.embed_documents(texts)
                 for c, emb in zip(batch, embeddings):
                     c["embedding"] = emb
                 self._store.insert_chunks(batch, embedding_model=self._embedder.model)

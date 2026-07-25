@@ -48,6 +48,17 @@ export const uploadDocument = async (file, docType, source, effectiveDate) => {
 export const getIngestionStatus = (taskId) =>
   fetch(`${BASE}/knowledge/status/${taskId}`, { headers: authHeaders() }).then(handleError)
 
+export const listDocuments = (docType) => {
+  const q = docType ? `?doc_type=${docType}` : ''
+  return fetch(`${BASE}/knowledge/documents${q}`, { headers: authHeaders() }).then(handleError)
+}
+
+export const deleteDocument = (docId) =>
+  fetch(`${BASE}/knowledge/documents/${docId}`, { method: 'DELETE', headers: authHeaders() }).then(r => { if (!r.ok) throw new Error('删除失败'); return r.json() })
+
+export const getDocumentChunks = (docId) =>
+  fetch(`${BASE}/knowledge/documents/${docId}/chunks`, { headers: authHeaders() }).then(handleError)
+
 // Chat Stream
 export async function* streamChat(query, history, sessionId) {
   const resp = await fetch(`${BASE}/chat/stream`, {

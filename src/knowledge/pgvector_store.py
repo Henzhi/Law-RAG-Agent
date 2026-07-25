@@ -160,6 +160,112 @@ class PgvectorStore:
         logger.info(f"pgvector 写入完成: {total} chunks, model={embedding_model}")
         return total
 
+    def list_documents(
+        self, doc_type: str | None = None, status: str = "active"
+    ) -> list[dict]:
+        """列出文档列表
+
+        Args:
+            doc_type: 按类型过滤，None=全部
+            status: 文档状态，默认 active
+
+        Returns:
+            [{id, title, doc_type, source, effective_date, chunks, created_at}, ...]
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            if doc_type:
+                cur.execute(
+                    """SELECT d.id, d.title, d.doc_type, d.source, d.effective_date,
+                              d.created_at, COUNT(dc.id) AS chunks
+                       FROM documents d
+                       LEFT JOIN document_chunks dc ON d.id = dc.doc_id
+                       WHERE d.status = %s AND d.doc_type = %s
+                       GROUP BY d.id
+                       ORDER BY d.created_at DESC""",
+                    (status, doc_type),
+                )
+            else:
+                cur.execute(
+                    """SELECT d.id, d.title, d.doc_type, d.source, d.effective_date,
+                              d.created_at, COUNT(dc.id) AS chunks
+                       FROM documents d
+                       LEFT JOIN document_chunks dc ON d.id = dc.doc_id
+                       WHERE d.status = %s
+                       GROUP BY d.id
+                       ORDER BY d.created_at DESC""",
+                    (status,),
+                )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": str(row[0]),
+                "title": row[1],
+                "doc_type": row[2],
+                "source": row[3] or "",
+                "effective_date": str(row[4]) if row[4] else "",
+                "created_at": str(row[5]) if row[5] else "",
+                "chunks": int(row[6]),
+            }
+            for row in rows
+        ]
+
+    def delete_document(self, doc_id: str) -> bool:
+        """删除文档及其所有块（级联删除）
+
+        Args:
+            doc_id: 文档 UUID
+
+        Returns:
+            是否成功删除
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            cur.execute("DELETE FROM documents WHERE id = %s", (doc_id,))
+            deleted = cur.rowcount
+        self._conn.commit()
+        if deleted:
+            logger.info(f"已删除文档: id={doc_id[:8]}... (含所有块)")
+        return deleted > 0
+
+    def get_document_chunks(self, doc_id: str) -> list[dict]:
+        """获取文档的所有块（不含向量）
+
+        Args:
+            doc_id: 文档 UUID
+
+        Returns:
+            [{id, chunk_type, content, embedding_model, metadata, created_at}, ...]
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                """SELECT id, chunk_type, content, embedding_model, metadata, created_at
+                   FROM document_chunks
+                   WHERE doc_id = %s
+                   ORDER BY created_at""",
+                (doc_id,),
+            )
+            rows = cur.fetchall()
+        results = []
+        for row in rows:
+            meta = row[4] or {}
+            if isinstance(meta, str):
+                import json as _json
+                try:
+                    meta = _json.loads(meta)
+                except Exception:
+                    meta = {}
+            results.append({
+                "id": str(row[0]),
+                "chunk_type": row[1],
+                "content": row[2],
+                "embedding_model": row[3],
+                "metadata": meta,
+                "created_at": str(row[5]) if row[5] else "",
+            })
+        return results
+
     def get_chunk_count(self) -> int:
         self._ensure_connection()
         with self._conn.cursor() as cur:
