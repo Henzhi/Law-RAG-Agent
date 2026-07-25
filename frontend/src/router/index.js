@@ -2,13 +2,11 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import LoginView from '../views/LoginView.vue'
 import ChatView from '../views/ChatView.vue'
 import KnowledgeView from '../views/KnowledgeView.vue'
-import HistoryView from '../views/HistoryView.vue'
 
 const routes = [
   { path: '/', name: 'chat', component: ChatView, meta: { requiresAuth: true } },
   { path: '/login', name: 'login', component: LoginView },
   { path: '/knowledge', name: 'knowledge', component: KnowledgeView, meta: { requiresAuth: true } },
-  { path: '/history', name: 'history', component: HistoryView, meta: { requiresAuth: true } },
 ]
 
 const router = createRouter({

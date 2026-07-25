@@ -8,6 +8,7 @@
       @new-chat="handleNewChat"
       @select="handleSelect"
       @toggle="sidebarOpen = !sidebarOpen"
+      @delete="handleDelete"
     />
 
     <!-- Main Area -->
@@ -19,7 +20,6 @@
           <span class="badge">Qwen2.5:7B</span>
           <span class="badge">FAISS</span>
           <router-link to="/knowledge" class="nav-link">知识库</router-link>
-          <router-link to="/history" class="nav-link">历史</router-link>
         </div>
         <div class="header-right">
           <span class="username">{{ auth.username }}</span>
@@ -64,7 +64,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
-import { loadHistory, listConversations, saveSession, streamChat } from '../api'
+import { loadHistory, listConversations, saveSession, streamChat, deleteConversation } from '../api'
 import Sidebar from '../components/Sidebar.vue'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatInput from '../components/ChatInput.vue'
@@ -197,6 +197,14 @@ async function handleSelect(sessionId) {
   thinkingTraces.value = []
   answered.value = false
   await loadCurrentSession()
+}
+
+async function handleDelete(sessionId) {
+  try {
+    await deleteConversation(sessionId)
+    refreshSessions()
+    if (chat.sessionId === sessionId) handleNewChat()
+  } catch { /* ignore */ }
 }
 
 function doLogout() {

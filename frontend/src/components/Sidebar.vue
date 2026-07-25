@@ -15,6 +15,7 @@
           :key="s.session_id"
           :class="['session-item', { active: s.session_id === activeId }]"
           @click="$emit('select', s.session_id)"
+          @contextmenu.prevent="onContextMenu($event, s)"
         >
           <svg class="session-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="15" height="15"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
           <span class="session-label">{{ s.first_msg || '新对话' }}</span>
@@ -29,16 +30,41 @@
         <polyline v-else points="9 18 15 12 9 6" />
       </svg>
     </button>
+
+    <!-- Context menu -->
+    <div v-if="ctxMenu.visible" class="ctx-menu" :style="{ top: ctxMenu.y + 'px', left: ctxMenu.x + 'px' }">
+      <button @click="doDelete">删除对话</button>
+    </div>
   </aside>
 </template>
 
 <script setup>
+import { reactive, onMounted, onUnmounted } from 'vue'
+
 defineProps({
   sessions: { type: Array, default: () => [] },
   activeId: { type: String, default: '' },
   open: { type: Boolean, default: true },
 })
-defineEmits(['new-chat', 'select', 'toggle'])
+const emit = defineEmits(['new-chat', 'select', 'toggle', 'delete'])
+
+const ctxMenu = reactive({ visible: false, x: 0, y: 0, session: null })
+
+function onContextMenu(e, session) {
+  ctxMenu.visible = true
+  ctxMenu.x = e.clientX
+  ctxMenu.y = e.clientY
+  ctxMenu.session = session
+}
+function closeMenu() { ctxMenu.visible = false }
+function doDelete() {
+  if (ctxMenu.session && confirm('确定删除此对话？')) {
+    emit('delete', ctxMenu.session.session_id)
+  }
+  closeMenu()
+}
+onMounted(() => document.addEventListener('click', closeMenu))
+onUnmounted(() => document.removeEventListener('click', closeMenu))
 </script>
 
 <style scoped>
@@ -123,4 +149,28 @@ defineEmits(['new-chat', 'select', 'toggle'])
 }
 .toggle-btn:hover { color: #C4B5FD; background: rgba(255,255,255,0.1); }
 .collapsed .toggle-btn { right: 12px; bottom: 16px; }
+
+.ctx-menu {
+  position: fixed;
+  z-index: 100;
+  background: #1F2937;
+  border: 1px solid #374151;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  padding: 4px;
+  min-width: 120px;
+}
+.ctx-menu button {
+  width: 100%;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: #FCA5A5;
+  cursor: pointer;
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+}
+.ctx-menu button:hover { background: rgba(239,68,68,0.15); }
 </style>
