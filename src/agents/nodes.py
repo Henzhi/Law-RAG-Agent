@@ -168,7 +168,8 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
         return {
             "retrieved_docs": [
                 {"content": d.content, "law_name": d.law_name,
-                 "article_range": d.article_range, "citation": d.citation}
+                 "article_range": d.article_range, "citation": d.citation,
+                 "score": d.score}
                 for d in docs
             ]
         }
