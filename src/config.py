@@ -134,9 +134,9 @@ INDEX_DIR = _PROJECT_ROOT / os.getenv("INDEX_DIR", "data/vector_store")
 # LangGraph Agent
 # ---------------------------------------------------------------------------
 
-# LangGraph Agent 路径（含查询改写 + 答案校验）。默认关闭：
-# 开启后每条查询会额外发起 rewrite + validate 两次 LLM 调用，延迟显著上升；
-# 追求最高回答质量时可设为 true（需 GPU 或接受慢速）。检索质量与噪声过滤不依赖它。
+# LangGraph Agent 路径（含答案校验/自动重试）。默认关闭：
+# 开启后每条查询会额外发起一次 validate LLM 调用，延迟上升；
+# 追求更高回答质量（幻觉审核 + 自动重试）时可设为 true。检索质量与噪声过滤不依赖它。
 AGENT_ENABLED = os.getenv("AGENT_ENABLED", "false").lower() == "true"
 AGENT_MAX_RETRIES = _safe_int("AGENT_MAX_RETRIES", 1)
 

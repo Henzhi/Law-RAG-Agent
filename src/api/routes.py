@@ -14,8 +14,8 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
-from .dependencies import get_engine, get_agent, _create_embedder
-from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse
+from .dependencies import get_engine, get_agent, get_llm, _create_embedder
+from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse, RewriteRequest
 from .auth import get_current_user, register_user, login_user
 from src.config import AGENT_ENABLED
 from src.rag.engine import needs_retrieval
@@ -30,6 +30,31 @@ logger = logging.getLogger(__name__)
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
     return [Message(msg["role"], msg["content"]) for msg in history if msg.get("content")]
+
+
+@router.post("/rewrite")
+def rewrite(req: RewriteRequest):
+    """查询改写：把口语化问题规范化为法律检索查询。
+
+    该接口是"查询改写节点"的实现，由前端开关控制是否调用：
+    - 关闭（法条精确查找）：前端不调用，直接用原句检索，保证绝对精确。
+    - 开启（案情分析）：前端调用，将 `proposed_query` 展示给用户确认/编辑，
+      确认后才用于 /chat/stream。改写风险由此转移为"用户确认过的意图"。
+    """
+    from src.agents.rewrite import rewrite_query
+    from src.rag.intent import sanitize_input
+
+    safe_query, is_safe, _ = sanitize_input(req.query)
+    if not is_safe:
+        return {"proposed_query": req.query, "changed": False, "skipped": True}
+    try:
+        llm = get_llm()
+        proposed = rewrite_query(llm, safe_query)
+    except Exception as e:
+        logger.warning("改写接口失败，回退原句: %s", e)
+        return {"proposed_query": req.query, "changed": False, "skipped": True}
+    changed = proposed.strip() != req.query.strip()
+    return {"proposed_query": proposed, "changed": changed, "skipped": False}
 
 
 @router.get("/health", response_model=HealthResponse)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -16,6 +17,15 @@ from src.knowledge.ingestion.docx_parser import DocxParser
 from src.knowledge.ingestion.text_cleaner import TextCleaner
 
 logger = logging.getLogger(__name__)
+
+# 匹配条号，如「第二百三十二条」「第232条」
+_ARTICLE_RE = re.compile(r"第[一二三四五六七八九十百千零两0-9]+条")
+
+
+def _extract_article_range(content: str) -> str:
+    """从条文内容中提取首个条号，用于检索结果的「引用条文」展示。"""
+    m = _ARTICLE_RE.search(content or "")
+    return m.group(0) if m else ""
 
 # 支持的文件类型
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
@@ -111,7 +121,10 @@ class IngestionPipeline:
 
             # 4. 分块 — 以段落为边界，500 字一段
             task["status"] = TaskStatus.EMBEDDING
-            chunks = self._split_paragraphs(cleaned, doc_id, doc_type=task["doc_type"])
+            chunks = self._split_paragraphs(
+                cleaned, doc_id, doc_type=task["doc_type"],
+                title=task.get("title") or file_name.replace(ext, ""),
+            )
             task["progress"] = 60
 
             # 5. 向量化 + 写入
@@ -211,7 +224,7 @@ class IngestionPipeline:
         doc_id = self._store.ensure_document(
             doc_type=doc_type, title=title, source=source, effective_date=effective_date,
         )
-        chunks = self._split_paragraphs(cleaned, doc_id, doc_type=doc_type)
+        chunks = self._split_paragraphs(cleaned, doc_id, doc_type=doc_type, title=title)
         if not chunks:
             raise ValueError("分块结果为空")
 
@@ -230,11 +243,14 @@ class IngestionPipeline:
         doc_id: str,
         doc_type: str = "law",
         max_chars: int = 500,
+        title: str | None = None,
     ) -> list[dict]:
         """按段落切分文本为块
 
         法律文档以条文为天然段落边界，
         每个「第X条」作为独立块，超长条文再按句号拆分。
+        每个块会带上 law_name（文档标题）与 article_range（解析出的条号），
+        供检索结果的「引用条文」展示使用。
         """
         chunks: list[dict] = []
         paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
@@ -274,4 +290,12 @@ class IngestionPipeline:
                         "metadata": {"raw": para[:200], "doc_type": doc_type},
                     })
 
+        # 补充法律引用字段到 metadata，供检索结果「引用条文」展示
+        # （检索器从 document_chunks.metadata JSONB 读取 law_name / article_range）
+        law_name = (title or "").strip()
+        for i, c in enumerate(chunks):
+            meta = c.setdefault("metadata", {})
+            meta["law_name"] = law_name
+            meta["article_range"] = _extract_article_range(c["content"])
+            meta["paragraph_index"] = i
         return chunks

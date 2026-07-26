@@ -89,3 +89,14 @@ export async function* streamChat(query, history, sessionId) {
     }
   }
 }
+
+// Query rewrite（智能改写 / 案情分析模式）
+export async function rewriteQuery(query) {
+  const resp = await fetch(`${BASE}/rewrite`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ query }),
+  })
+  if (!resp.ok) throw new Error(`改写请求失败: ${resp.status}`)
+  return resp.json()
+}

@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 
 from src.agents.state import AgentState
-from src.agents.prompts import REWRITE_PROMPT, VALIDATOR_PROMPT
+from src.agents.prompts import VALIDATOR_PROMPT
 from src.rag.intent import classify_intent, classify_query_type
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
 from src.llm.client import Message as LLMMessage
@@ -131,33 +131,10 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
         answer = llm.chat(state["query"], system_prompt=CASUAL_SYSTEM_PROMPT)
         return {"answer": answer, "validation_passed": True}
 
-    # ---- 查询改写 ----
-
-    def rewrite_query_node(state: AgentState) -> dict:
-        query = state["query"]
-        history = state.get("messages", [])
-
-        hist_text = ""
-        if history:
-            recent = history[-6:]
-            hist_text = "\n".join(
-                f"{_msg_role(m)}: {str(_msg_content(m))[:200]}"
-                for m in recent
-            )
-
-        prompt = REWRITE_PROMPT.format(query=query, history=hist_text or "（首次对话）")
-        rewritten = llm.chat(prompt, system_prompt="你是一个法律查询改写助手，只输出改写后的查询。").strip()
-        rewritten = rewritten.strip('"').strip("'").strip()
-        if not rewritten or len(rewritten) < 2:
-            rewritten = query
-
-        logger.info(f"查询改写: '{query}' → '{rewritten}'")
-        return {"rewritten_query": rewritten}
-
     # ---- 检索 ----
 
     def retrieve_node(state: AgentState) -> dict:
-        q = state.get("rewritten_query", state["query"])
+        q = state["query"]
         query_type = state.get("query_type", "law_lookup")
 
         # 按意图路由文档类型
@@ -178,7 +155,7 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
 
     def generate_node(state: AgentState) -> dict:
         docs = state.get("retrieved_docs", [])
-        query = state.get("rewritten_query", state["query"])
+        query = state["query"]
         feedback = state.get("validation_feedback", "")
         memory_context = state.get("memory_context", "")
 
@@ -253,7 +230,6 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
         "route_by_intent": route_by_intent,
         "memory_retrieve": memory_retrieve_node,
         "casual_reply": casual_reply_node,
-        "rewrite_query": rewrite_query_node,
         "retrieve": retrieve_node,
         "generate": generate_node,
         "validate": validate_node,

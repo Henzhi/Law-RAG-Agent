@@ -14,6 +14,11 @@ class ChatRequest(BaseModel):
     session_id: str = Field(default="", description="会话 ID，客户端传入，服务端按用户隔离校验")
 
 
+class RewriteRequest(BaseModel):
+    """查询改写请求：把口语化问题规范化为法律检索查询"""
+    query: str = Field(..., min_length=1, max_length=2000, description="用户原始提问")
+
+
 class ChatResponse(BaseModel):
     """单次问答响应"""
     query: str

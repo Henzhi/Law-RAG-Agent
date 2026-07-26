@@ -17,7 +17,6 @@ class AgentState(TypedDict):
     各节点读取/写入对应的 key，LangGraph 自动处理状态传递。
     """
     query: str                      # 原始用户查询
-    rewritten_query: str            # 改写后的查询（用于检索）
     messages: Annotated[list, add_messages]  # 当前会话对话历史
     retrieved_docs: list[dict]      # 检索结果 [{"content", "law_name", "article_range", "citation"}]
     answer: str                     # 生成的最终回答
