@@ -152,6 +152,9 @@ docker compose up -d
 | `POST` | `/api/chat/stream` | 流式问答（SSE 逐字输出） | Bearer |
 | `POST` | `/api/auth/register` | 用户注册 | — |
 | `POST` | `/api/auth/login` | 用户登录（返回 JWT） | — |
+| `POST` | `/api/crawl` | 触发爬取任务（国家法律法规数据库，增量更新） | — |
+| `GET` | `/api/crawl/status/{task_id}` | 查询爬取任务状态与结果 | — |
+| `GET` | `/api/crawl/types` | 列出支持的爬取类型 | — |
 
 ### 请求示例
 
@@ -342,6 +345,53 @@ uv run pytest tests/ --ignore=tests/test_api.py -v
 刑法、民法典、宪法、行政处罚法、行政复议法、行政强制法、行政许可法、治安管理处罚法、道路交通安全法、食品安全法、环境保护法、劳动法、社会保险法、公司法、证券法、企业破产法、合伙企业法、个人独资企业法、信托法、票据法、专利法、商标法、著作权法、反不正当竞争法、监察法、立法法、公务员法、全国人大组织法、国务院组织法、行政诉讼法
 
 数据来源：北大法宝公开法律数据库。
+
+---
+
+## 爬取功能（增量更新）
+
+内置「国家法律法规数据库」（全国人大官方，flk.npc.gov.cn）爬虫，可将法律正文抓取、清洗后**增量**落地到 `LawData/<子目录>/`，避免重复下载已存在的法律。
+
+- **数据源**：全国人大官方，免费、权威、合规风险低（请仅用于学习 / 研究，并控制请求频率）
+- **支持类型**：`law`(法律法规)、`regulation`(行政法规)、`judicial`(司法解释)、`local`(地方性法规)、`constitution`(宪法)、`supervision`(监察法规)、`all`(全部)；`case`(案例 / 裁判文书) 该数据源不提供
+- **增量策略**：每个子目录维护 `.crawl_manifest.json`，按文档 id 去重；`force=true` 可强制重爬
+- **落库方式**（`--store` / API 的 `store` 字段）：
+  - `txt`（默认）：落地到 `LawData/<子目录>/*.txt`，供 FAISS 索引
+  - `pg`：**直接写入 PostgreSQL + pgvector**（需 `PG_ENABLED=true` 且已 `docker compose up -d`），无需落盘即可被检索
+  - `both`：两者都做
+  - pg 模式下的增量按「标题」去重（已入库则跳过，`force=true` 会删除旧文档重建）
+
+### API 触发
+
+```bash
+# 1) 提交爬取任务（后台执行，返回 task_id）
+curl -X POST http://localhost:8000/api/crawl \
+  -H "Content-Type: application/json" \
+  -d '{"source":"npc","doc_type":"law","keyword":"刑法","limit":10,"force":false}'
+
+# 2) 轮询进度与结果
+curl http://localhost:8000/api/crawl/status/{task_id}
+
+# 3) 查看支持的类型
+curl http://localhost:8000/api/crawl/types
+```
+
+### 命令行触发（可选）
+
+```bash
+uv run python -c "from src.knowledge.crawler import NpcLawCrawler; \
+  print(NpcLawCrawler().crawl(doc_type='law', keyword='刑法', limit=10))"
+```
+
+### 爬取后重建索引
+
+爬取完成后会产出 `LawData/laws/*.txt` 等增量文件。需重建索引使其可被检索：
+
+```bash
+uv run python scripts/build_index.py build
+```
+
+也可在 `/api/crawl` 请求体中设置 `"rebuild": true`，任务完成后由服务自动触发重建。
 
 ---
 

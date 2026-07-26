@@ -169,6 +169,61 @@ class IngestionPipeline:
         else:
             raise ValueError(f"不支持的文件类型: {ext}")
 
+    def ingest_text(
+        self,
+        title: str,
+        text: str,
+        doc_type: str = "law",
+        source: str = "",
+        effective_date: str | None = None,
+        force: bool = False,
+    ) -> int:
+        """直接入库纯文本（无需落盘文件）。
+
+        与 run() 走同一条「清洗 → 分块 → embedding → insert_chunks」链路。
+
+        Args:
+            title          : 文档标题（同时用于增量去重，按标题精确匹配）
+            text           : 已清洗 / 未清洗的正文
+            doc_type       : 文档类型
+            source         : 来源标识（如 flk.npc.gov.cn）
+            effective_date : 生效日期（ISO 字符串或 None）
+            force          : 已存在时是否删除旧文档后重建
+
+        Returns:
+            0  -> 已存在且非强制（跳过）
+            >0 -> 写入的文本块数量
+        """
+        if not text or len(text) < 20:
+            raise ValueError(f"文本过短（{len(text)} 字符）")
+        cleaned = self._cleaner.clean(text)
+        if not cleaned or len(cleaned) < 20:
+            raise ValueError("清洗后文本过短")
+
+        existing = self._store.get_document_id_by_title(title)
+        if existing and not force:
+            logger.info(f"[ingest] 跳过(已存在): {title}")
+            return 0
+        if existing and force:
+            logger.info(f"[ingest] 强制重建，删除旧文档: {title}")
+            self._store.delete_document(existing)
+
+        doc_id = self._store.ensure_document(
+            doc_type=doc_type, title=title, source=source, effective_date=effective_date,
+        )
+        chunks = self._split_paragraphs(cleaned, doc_id, doc_type=doc_type)
+        if not chunks:
+            raise ValueError("分块结果为空")
+
+        for i in range(0, len(chunks), self._embedder.batch_size):
+            batch = chunks[i : i + self._embedder.batch_size]
+            embeddings = self._embedder.embed_documents([c["content"] for c in batch])
+            for c, emb in zip(batch, embeddings):
+                c["embedding"] = emb
+            self._store.insert_chunks(batch, embedding_model=self._embedder.model)
+        logger.info(f"[ingest] 写入完成: {title} → {len(chunks)} 块")
+        return len(chunks)
+
     @staticmethod
     def _split_paragraphs(
         text: str,

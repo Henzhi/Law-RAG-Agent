@@ -110,6 +110,20 @@ class PgvectorStore:
         logger.info(f"新建文档: [{doc_type}] {title} (id={doc_id[:8]}...)")
         return doc_id
 
+    def get_document_id_by_title(self, title: str) -> str | None:
+        """按标题查询已存在（active）文档的 id，不存在返回 None。
+
+        用于爬虫增量去重：命中说明该法律已入库，可跳过。
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM documents WHERE title = %s AND status = 'active'",
+                (title,),
+            )
+            row = cur.fetchone()
+        return str(row[0]) if row else None
+
     # ------------------------------------------------------------------
     # 块写入
     # ------------------------------------------------------------------

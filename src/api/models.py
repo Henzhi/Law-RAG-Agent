@@ -73,3 +73,40 @@ class ErrorResponse(BaseModel):
     error: str
     detail: str = ""
     code: str = "INTERNAL_ERROR"
+
+
+class CrawlRequest(BaseModel):
+    """爬取请求（数据源: 国家法律法规数据库）"""
+    source: str = Field(default="npc", description="数据源，目前仅支持 npc(国家法律法规数据库)")
+    doc_type: str = Field(
+        default="law",
+        description="文档类型: law/regulation/judicial/local/constitution/supervision/all/case",
+    )
+    keyword: str = Field(default="", description="标题模糊搜索关键词（空=该类型全部）")
+    limit: int = Field(default=50, ge=0, le=1000, description="最多爬取条数，0=不限")
+    force: bool = Field(default=False, description="是否强制重爬已存在的文档")
+    subdir: str = Field(default="", description="覆盖输出子目录名（默认按 doc_type 自动）")
+    store: str = Field(
+        default="txt",
+        description="输出目标: txt(LawData/FAISS) / pg(pgvector) / both。可组合如 pg,txt",
+    )
+    rebuild: bool = Field(default=False, description="爬完后是否自动重建 FAISS 索引（store 不含 txt 时无效）")
+
+
+class CrawlTaskResponse(BaseModel):
+    """爬取任务提交响应"""
+    task_id: str
+    status: str
+    message: str
+
+
+class CrawlStatusResponse(BaseModel):
+    """爬取任务状态 / 结果"""
+    task_id: str
+    status: str
+    progress: dict
+    errors: list[str] = []
+    files: list[str] = []
+    finished: bool
+    rebuild: str | None = None
+    result: dict | None = None

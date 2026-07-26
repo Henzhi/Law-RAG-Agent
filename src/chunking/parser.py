@@ -365,7 +365,8 @@ def build_all_documents(data_dir: str | Path) -> list[LawDocument]:
     data_dir = Path(data_dir)
     parser = LawParser()
     docs = []
-    for fp in sorted(data_dir.glob('*.txt')):
+    # 递归扫描（支持 LawData 下的子目录，如 laws/、regulations/ 等增量爬取结果）
+    for fp in sorted(data_dir.rglob('*.txt')):
         try:
             doc = parser.parse_file(fp)
             docs.append(doc)

@@ -3,16 +3,19 @@ API 路由定义。支持多轮对话 + LangGraph Agent + 用户会话隔离。
 """
 from __future__ import annotations
 
+import asyncio
 import json
-import time
 import logging
+import sys
+import time
 from pathlib import Path
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 
 from .dependencies import get_engine, get_agent, _create_embedder
-from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse
+from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse
 from .auth import get_current_user, register_user, login_user
 from src.config import AGENT_ENABLED
 from src.rag.engine import needs_retrieval
@@ -448,3 +451,123 @@ def get_document_chunks(doc_id: str):
     if not chunks:
         raise HTTPException(404, "文档不存在或无内容")
     return {"doc_id": doc_id, "chunks": chunks, "total": len(chunks)}
+
+
+# ----------------------------------------------------------------------------
+# 6. 爬虫 — 国家法律法规数据库增量爬取
+# ----------------------------------------------------------------------------
+_crawl_tasks: dict[str, dict] = {}
+
+
+@router.post("/crawl", response_model=CrawlTaskResponse)
+async def crawl_laws(req: CrawlRequest):
+    """触发爬取（后台任务）。
+
+    数据源现仅支持 npc（全国人大「国家法律法规数据库」）。任务提交后返回
+    task_id，通过 GET /api/crawl/status/{task_id} 查询进度与结果。
+    爬取的文档会落地到 LawData/<子目录>/ 并做增量去重。
+    """
+    if req.source != "npc":
+        raise HTTPException(400, "暂仅支持 source=npc（国家法律法规数据库）")
+    task_id = uuid4().hex[:12]
+    _crawl_tasks[task_id] = {
+        "status": "pending",
+        "progress": {"total": 0, "added": 0, "updated": 0, "skipped": 0, "failed": 0},
+        "errors": [], "files": [], "finished": False,
+        "result": None, "rebuild": None,
+    }
+    asyncio.create_task(asyncio.to_thread(_run_crawl, task_id, req))
+    return CrawlTaskResponse(
+        task_id=task_id, status="pending",
+        message="爬取任务已提交，请用 GET /api/crawl/status/{task_id} 查询进度",
+    )
+
+
+def _run_crawl(task_id: str, req: CrawlRequest) -> None:
+    from dataclasses import asdict
+
+    from src.knowledge.crawler import NpcLawCrawler
+
+    state = _crawl_tasks.get(task_id)
+    if state is None:
+        return
+    state["status"] = "running"
+    try:
+        crawler = NpcLawCrawler()
+
+        def _on_progress(r) -> None:
+            state["progress"] = {
+                "total": r.total, "added": r.added, "updated": r.updated,
+                "skipped": r.skipped, "failed": r.failed,
+            }
+
+        res = crawler.crawl(
+            doc_type=req.doc_type, keyword=req.keyword, limit=req.limit,
+            force=req.force, subdir=req.subdir, store=req.store,
+            progress_cb=_on_progress,
+        )
+        state["result"] = asdict(res)
+        state["errors"] = res.errors
+        state["files"] = res.files
+        state["progress"] = {
+            "total": res.total, "added": res.added, "updated": res.updated,
+            "skipped": res.skipped, "failed": res.failed,
+        }
+        state["finished"] = True
+        state["status"] = "done"
+        if req.rebuild and "pg" not in (req.store or "txt").lower():
+            _trigger_rebuild(task_id)
+    except Exception as e:
+        state["status"] = "error"
+        state["errors"] = [str(e)]
+        state["finished"] = True
+        logger.error(f"[crawl] task {task_id} 失败: {e}")
+
+
+def _trigger_rebuild(task_id: str) -> None:
+    import subprocess
+
+    state = _crawl_tasks.get(task_id)
+    if state is None:
+        return
+    PROJECT_ROOT = Path(__file__).resolve().parents[2]
+    script = PROJECT_ROOT / "scripts" / "build_index.py"
+    state["rebuild"] = "running"
+    try:
+        subprocess.run([sys.executable, str(script), "build"], cwd=str(PROJECT_ROOT), check=True)
+        state["rebuild"] = "done"
+    except Exception as e:
+        state["rebuild"] = f"error: {e}"
+        logger.error(f"[crawl] 重建索引失败: {e}")
+
+
+@router.get("/crawl/status/{task_id}", response_model=CrawlStatusResponse)
+async def get_crawl_status(task_id: str):
+    """查询爬取任务状态与结果"""
+    state = _crawl_tasks.get(task_id)
+    if state is None:
+        raise HTTPException(404, "任务不存在")
+    return CrawlStatusResponse(
+        task_id=task_id,
+        status=state["status"],
+        progress=state["progress"],
+        errors=state["errors"],
+        files=state["files"],
+        finished=state["finished"],
+        rebuild=state.get("rebuild"),
+        result=state.get("result"),
+    )
+
+
+@router.get("/crawl/types")
+async def list_crawl_types():
+    """列出支持的爬取类型与说明"""
+    return {
+        "source": "npc",
+        "types": {
+            "law": "法律法规", "regulation": "行政法规", "judicial": "司法解释",
+            "local": "地方性法规", "constitution": "宪法", "supervision": "监察法规",
+            "all": "全部（依次爬取上述类型）",
+        },
+        "unsupported": ["case（案例 / 裁判文书，该数据源不提供）"],
+    }
