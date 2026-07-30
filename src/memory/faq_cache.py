@@ -43,6 +43,8 @@ class FAQCache:
         from pgvector.psycopg2 import register_vector
 
         self._embedder = embedder
+        # 保存原始连接串用于重连 — conn.dsn 不保证回传密码，重连可能失败
+        self._conn_string = conn_string
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
 
@@ -58,7 +60,7 @@ class FAQCache:
                 self._conn.close()
             except Exception:
                 pass
-            self._conn = psycopg2.connect(self._conn.dsn)
+            self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
 
     def close(self):
@@ -82,7 +84,7 @@ class FAQCache:
 
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT answer, sources, "
+                "SELECT id, answer, sources, "
                 "1 - (question_embed <=> %s::halfvec) AS score "
                 "FROM faq_cache "
                 "WHERE status = 'active' "
@@ -97,22 +99,21 @@ class FAQCache:
         if row is None:
             return None
 
-        answer, sources_raw, score = row
+        faq_id, answer, sources_raw, score = row
 
         # 解析 JSON — PSQL 中 sources 以 json.dumps 写入，取回后是 str
         import json as _json
         try:
             sources = _json.loads(sources_raw) if isinstance(sources_raw, str) else (sources_raw or [])
-        except (json.JSONDecodeError, TypeError):
+        except (_json.JSONDecodeError, TypeError):
             sources = []
 
-        # 更新命中次数（通过 FAQ ID 精确定位）
+        # 更新命中次数 — 直接用首次查询取出的 id，避免重复向量近邻子查询
+        # （原实现一次命中 = 2 次 HNSW 检索，且并发下可能加错条目）
         with self._conn.cursor() as cur:
             cur.execute(
-                "UPDATE faq_cache SET hit_count = hit_count + 1 "
-                "WHERE id = (SELECT id FROM faq_cache WHERE status = 'active' "
-                " ORDER BY question_embed <=> %s::halfvec LIMIT 1)",
-                (vec,),
+                "UPDATE faq_cache SET hit_count = hit_count + 1 WHERE id = %s",
+                (faq_id,),
             )
         self._conn.commit()
 

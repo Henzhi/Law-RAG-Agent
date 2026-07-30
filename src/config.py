@@ -145,7 +145,8 @@ AGENT_MAX_RETRIES = _safe_int("AGENT_MAX_RETRIES", 1)
 # ---------------------------------------------------------------------------
 
 PG_ENABLED = os.getenv("PG_ENABLED", "false").lower() == "true"
-PG_CONN = os.getenv("PG_CONN", "postgresql://lawrag:lawrag123@localhost:5432/lawrag")
+# 安全基线：连接串默认值不含密码，生产环境必须通过 PG_CONN 环境变量显式提供
+PG_CONN = os.getenv("PG_CONN", "postgresql://lawrag@localhost:5432/lawrag")
 
 # ---------------------------------------------------------------------------
 # 服务

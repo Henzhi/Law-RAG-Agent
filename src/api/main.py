@@ -79,12 +79,12 @@ async def add_request_id(request: Request, call_next):
 
 @app.exception_handler(TimeoutError)
 async def timeout_exception_handler(request: Request, exc: TimeoutError):
+    # 内部异常原文只落日志，不外发给客户端（防连接串/路径等信息泄露）
     logger.error(f"请求超时: {request.url} - {exc}")
     return JSONResponse(
         status_code=504,
         content=ErrorResponse(
             error="LLM 响应超时，请稍后重试",
-            detail=str(exc),
             code="TIMEOUT",
         ).model_dump(),
     )
@@ -97,7 +97,6 @@ async def connection_exception_handler(request: Request, exc: ConnectionError):
         status_code=503,
         content=ErrorResponse(
             error="服务暂不可用，请检查 Ollama / PostgreSQL 是否正常运行",
-            detail=str(exc),
             code="SERVICE_UNAVAILABLE",
         ).model_dump(),
     )
@@ -111,7 +110,6 @@ async def general_exception_handler(request: Request, exc: Exception):
         status_code=500,
         content=ErrorResponse(
             error="服务器内部错误",
-            detail=str(exc),
             code="INTERNAL_ERROR",
         ).model_dump(),
     )

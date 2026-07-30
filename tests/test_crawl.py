@@ -74,6 +74,9 @@ def test_save_format_and_manifest_roundtrip(tmp_path: Path):
 def _make_client() -> TestClient:
     app = FastAPI()
     from src.api.routes import router as api_router
+    from src.api.auth import require_registered_user
+    # 管理接口已要求登录（审计修复），测试中覆写依赖以离线通过
+    app.dependency_overrides[require_registered_user] = lambda: "test-user"
     app.include_router(api_router, prefix="/api")
     return TestClient(app)
 

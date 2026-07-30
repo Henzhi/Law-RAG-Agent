@@ -11,9 +11,11 @@ from __future__ import annotations
 import hashlib
 import secrets
 import logging
+import threading
+import time
 
 import psycopg2
-from fastapi import Request, HTTPException
+from fastapi import Depends, Request, HTTPException
 
 from src.config import PG_CONN
 
@@ -28,6 +30,34 @@ ANONYMOUS_USER_ID = "00000000-0000-0000-0000-000000000000"
 # PBKDF2 参数
 PBKDF2_ITERATIONS = 100_000
 PBKDF2_ALGORITHM = "sha256"
+
+# 登录防爆破：同一用户名滑动窗口内连续失败 N 次后锁定（内存实现，重启即清零）
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_FAIL_WINDOW = 300    # 5 分钟滑动窗口（秒）
+_login_failures: dict[str, list[float]] = {}
+_login_failures_lock = threading.Lock()
+
+
+def _check_login_allowed(username: str) -> None:
+    """登录前检查：窗口内失败次数超限则拒绝（429）"""
+    now = time.time()
+    with _login_failures_lock:
+        fails = [t for t in _login_failures.get(username, []) if now - t < _LOGIN_FAIL_WINDOW]
+        _login_failures[username] = fails
+        if len(fails) >= _LOGIN_MAX_FAILURES:
+            retry_after = int(_LOGIN_FAIL_WINDOW - (now - fails[0])) + 1
+            logger.warning(f"登录锁定中: {username}，剩余 {retry_after}s")
+            raise HTTPException(status_code=429, detail=f"失败次数过多，请 {retry_after} 秒后重试")
+
+
+def _record_login_failure(username: str) -> None:
+    with _login_failures_lock:
+        _login_failures.setdefault(username, []).append(time.time())
+
+
+def _clear_login_failures(username: str) -> None:
+    with _login_failures_lock:
+        _login_failures.pop(username, None)
 
 
 def _hash_password(password: str) -> str:
@@ -104,7 +134,9 @@ def login_user(username: str, password: str) -> dict:
     """
     登录：验证用户名密码，返回 Token。
     每次登录生成新 Token（旧 Token 失效）。
+    连续失败次数超限将被临时锁定（防爆破）。
     """
+    _check_login_allowed(username)
     conn = _get_db()
     try:
         with conn.cursor() as cur:
@@ -114,11 +146,15 @@ def login_user(username: str, password: str) -> dict:
             )
             row = cur.fetchone()
             if row is None:
+                _record_login_failure(username)
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
 
             user_id, stored_hash = str(row[0]), row[1]
             if not _verify_password(password, stored_hash):
+                _record_login_failure(username)
                 raise HTTPException(status_code=401, detail="用户名或密码错误")
+
+            _clear_login_failures(username)
 
             # 生成新 Token 并更新
             # 先清掉旧 token 缓存
@@ -214,3 +250,14 @@ def get_current_user(request: Request) -> str:
             return user_id
 
     return ANONYMOUS_USER_ID
+
+
+def require_registered_user(user_id: str = Depends(get_current_user)) -> str:
+    """
+    严格认证依赖：拒绝匿名回退，用于知识库管理/爬虫等管理接口。
+
+    与 get_current_user 的区别：无有效 Token 时返回 401，而非匿名用户。
+    """
+    if user_id == ANONYMOUS_USER_ID:
+        raise HTTPException(status_code=401, detail="该操作需要登录")
+    return user_id

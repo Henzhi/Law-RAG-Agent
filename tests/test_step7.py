@@ -85,14 +85,15 @@ class TestHallucinationGuard:
         assert "未找到" in result
 
     def test_high_score_docs_pass(self):
-        from src.memory.hallucination_guard import HallucinationGuard
-        docs = [{"score": 0.85}, {"score": 0.72}]
+        # 阈值随当前配置动态取值（9dbdd2c 将默认从 0.7 降至 0.4，勿再硬编码分数）
+        from src.memory.hallucination_guard import HallucinationGuard, MIN_SIMILARITY
+        docs = [{"score": MIN_SIMILARITY + 0.2}, {"score": MIN_SIMILARITY + 0.01}]
         result = HallucinationGuard.check_retrieval_confidence(docs)
         assert result is None
 
     def test_low_score_docs_fail(self):
-        from src.memory.hallucination_guard import HallucinationGuard
-        docs = [{"score": 0.55}, {"score": 0.60}]
+        from src.memory.hallucination_guard import HallucinationGuard, MIN_SIMILARITY
+        docs = [{"score": MIN_SIMILARITY - 0.05}, {"score": MIN_SIMILARITY - 0.01}]
         result = HallucinationGuard.check_retrieval_confidence(docs)
         assert result is not None
         assert "相似度" in result

@@ -58,6 +58,8 @@ class ConversationMemoryManager:
     ):
         self._embedder = embedder
         self._llm = llm
+        # 保存原始连接串用于重连 — conn.dsn 不保证回传密码，重连可能失败
+        self._conn_string = conn_string
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
 
@@ -72,7 +74,7 @@ class ConversationMemoryManager:
                 self._conn.close()
             except Exception:
                 pass
-            self._conn = psycopg2.connect(self._conn.dsn)
+            self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
             logger.info("记忆管理器: PG 重连成功")
 

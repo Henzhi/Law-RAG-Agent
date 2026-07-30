@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 
 from .dependencies import get_engine, get_agent, get_llm, _create_embedder
 from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse, RewriteRequest
-from .auth import get_current_user, register_user, login_user
+from .auth import get_current_user, require_registered_user, register_user, login_user
 from src.config import AGENT_ENABLED
 from src.rag.engine import needs_retrieval
 from src.rag.intent import sanitize_input
@@ -30,6 +30,37 @@ logger = logging.getLogger(__name__)
 
 def _dicts_to_messages(history: list[dict]) -> list[Message]:
     return [Message(msg["role"], msg["content"]) for msg in history if msg.get("content")]
+
+
+# 对话历史上限：最多保留轮数 / 单条最大字符数（防 token 放大与超大 body）
+_HISTORY_MAX_TURNS = 10
+_HISTORY_MAX_CHARS = 2000
+
+
+def _sanitize_history(history: list[dict] | None) -> list[dict]:
+    """对话历史安全过滤 — 与 query 同级的注入防御。
+
+    客户端可任意构造 history，若不过滤则 sanitize_input 对 query 的
+    防御可被完全绕过。规则：
+    - 仅保留 user/assistant 角色、字符串 content
+    - 每条 content 过 sanitize_input，命中注入则丢弃该条（不整体拒绝，
+      避免误伤正常长对话）
+    - 限制最多 _HISTORY_MAX_TURNS 条、单条 _HISTORY_MAX_CHARS 字
+    """
+    if not history:
+        return []
+    safe: list[dict] = []
+    for msg in history[-_HISTORY_MAX_TURNS:]:
+        role = msg.get("role")
+        content = msg.get("content")
+        if role not in ("user", "assistant") or not isinstance(content, str) or not content:
+            continue
+        cleaned, is_safe, _ = sanitize_input(content)
+        if not is_safe:
+            logger.warning("[history] 注入风险条目已丢弃: role=%s preview=%s", role, content[:50])
+            continue
+        safe.append({"role": role, "content": cleaned[:_HISTORY_MAX_CHARS]})
+    return safe
 
 
 @router.post("/rewrite")
@@ -83,7 +114,8 @@ async def health():
             llm_model=LLM_MODEL,
         )
     except Exception as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        logger.error(f"[health] 引擎状态检查失败: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=503, detail="引擎未就绪，请稍后重试")
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -99,7 +131,7 @@ def chat(req: ChatRequest):
     try:
         if AGENT_ENABLED:
             agent = get_agent()
-            result = agent.ask(safe_query, history=req.history)
+            result = agent.ask(safe_query, history=_sanitize_history(req.history))
             elapsed = (time.perf_counter() - t_start) * 1000
             ret_docs = result.get("retrieved_docs", [])
             perf_logger.info(
@@ -114,7 +146,7 @@ def chat(req: ChatRequest):
             )
 
         engine = get_engine()
-        history = _dicts_to_messages(req.history)
+        history = _dicts_to_messages(_sanitize_history(req.history))
 
         t_route = time.perf_counter()
         if not needs_retrieval(req.query, engine.llm):
@@ -147,8 +179,8 @@ def chat(req: ChatRequest):
         raise
     except Exception as e:
         elapsed = (time.perf_counter() - t_start) * 1000
-        perf_logger.error(f"[chat] error={type(e).__name__} elapsed={elapsed:.0f}ms")
-        raise HTTPException(status_code=500, detail=f"处理请求失败: {str(e)}")
+        perf_logger.error(f"[chat] error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
+        raise HTTPException(status_code=500, detail="处理请求失败，请稍后重试")
 
 
 def _sse(data: dict) -> str:
@@ -175,14 +207,16 @@ async def chat_stream(req: ChatRequest):
     if AGENT_ENABLED:
         agent = get_agent()
 
+        safe_history = _sanitize_history(req.history)
+
         def generate():
             try:
-                for event in agent.stream(safe_query, history=req.history):
+                for event in agent.stream(safe_query, history=safe_history):
                     yield _sse(event)
             except Exception as e:
                 elapsed = (time.perf_counter() - t_start) * 1000
-                perf_logger.error(f"[stream] mode=agent error={type(e).__name__} elapsed={elapsed:.0f}ms")
-                yield _sse({"type": "error", "content": f"处理失败: {str(e)}"})
+                perf_logger.error(f"[stream] mode=agent error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
+                yield _sse({"type": "error", "content": "处理失败，请稍后重试"})
             elapsed = (time.perf_counter() - t_start) * 1000
             perf_logger.info(f"[stream] mode=agent query_len={len(req.query)} elapsed={elapsed:.0f}ms")
             yield "data: [DONE]\n\n"
@@ -194,7 +228,7 @@ async def chat_stream(req: ChatRequest):
 
     # ---- 非 Agent 路径：统一用一个 generate() 发出 thinking 事件 ----
     engine = get_engine()
-    history = _dicts_to_messages(req.history)
+    history = _dicts_to_messages(_sanitize_history(req.history))
 
     def generate():
         try:
@@ -236,8 +270,8 @@ async def chat_stream(req: ChatRequest):
 
         except Exception as e:
             elapsed = (time.perf_counter() - t_start) * 1000
-            perf_logger.error(f"[stream] error={type(e).__name__} elapsed={elapsed:.0f}ms")
-            yield _sse({"type": "error", "content": f"处理失败: {str(e)}"})
+            perf_logger.error(f"[stream] error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
+            yield _sse({"type": "error", "content": "处理失败，请稍后重试"})
 
         elapsed = (time.perf_counter() - t_start) * 1000
         perf_logger.info(f"[stream] query_len={len(req.query)} elapsed={elapsed:.0f}ms")
@@ -272,12 +306,24 @@ def get_conversation(session_id: str, user_id: str = Depends(get_current_user)):
     return {"session_id": session_id, "history": history}
 
 
+# 会话保存上限：防超大 JSON body 打爆内存 / PG 磁盘
+_SAVE_MAX_MESSAGES = 500
+_SAVE_MAX_BYTES = 2 * 1024 * 1024  # 2MB
+
+
 @router.post("/conversations/{session_id}")
 def save_session(session_id: str, body: dict, user_id: str = Depends(get_current_user)):
     """保存整个会话的 JSON 消息数组（每次整体覆盖，不逐条插入）"""
     from .conversation_store import get_conversation_store
     store = get_conversation_store()
     messages = body.get("messages", [])
+    if not isinstance(messages, list):
+        raise HTTPException(400, "messages 必须为数组")
+    if len(messages) > _SAVE_MAX_MESSAGES:
+        raise HTTPException(400, f"消息条数过多: {len(messages)}（限制 {_SAVE_MAX_MESSAGES}）")
+    payload_size = len(json.dumps(messages, ensure_ascii=False).encode("utf-8"))
+    if payload_size > _SAVE_MAX_BYTES:
+        raise HTTPException(400, f"会话体积过大: {payload_size / 1024 / 1024:.1f}MB（限制 2MB）")
     store.save_session(user_id=user_id, session_id=session_id, messages=messages)
     return {"ok": True}
 
@@ -358,8 +404,9 @@ async def upload_document(
     doc_type: str = Form("law"),
     source: str = Form(""),
     effective_date: str = Form(""),
+    _user: str = Depends(require_registered_user),
 ):
-    """上传法律文档（PDF/DOCX/TXT）
+    """上传法律文档（PDF/DOCX/TXT）—— 需登录
 
     文件被保存到临时目录后由解析管道处理，
     返回 task_id 用于查询处理进度。
@@ -373,11 +420,11 @@ async def upload_document(
     if ext not in allowed:
         raise HTTPException(400, f"不支持的文件格式: {ext}，支持: {', '.join(allowed)}")
 
-    # 检查文件大小
-    content = await file.read()
+    # 检查文件大小 — 带上限读取，避免超大文件先占满内存再被拒
     max_size = 50 * 1024 * 1024  # 50MB
+    content = await file.read(max_size + 1)
     if len(content) > max_size:
-        raise HTTPException(400, f"文件过大: {len(content) / 1024 / 1024:.1f}MB（限制 50MB）")
+        raise HTTPException(400, f"文件过大（限制 50MB）")
 
     # 保存到临时文件
     suffix = ext if ext else ".txt"
@@ -457,8 +504,8 @@ def list_knowledge_documents(doc_type: str | None = None):
 
 
 @router.delete("/knowledge/documents/{doc_id}")
-def delete_knowledge_document(doc_id: str):
-    """删除文档及其所有向量块"""
+def delete_knowledge_document(doc_id: str, _user: str = Depends(require_registered_user)):
+    """删除文档及其所有向量块 —— 需登录"""
     store = _get_store()
     ok = store.delete_document(doc_id)
     if not ok:
@@ -485,8 +532,8 @@ _crawl_tasks: dict[str, dict] = {}
 
 
 @router.post("/crawl", response_model=CrawlTaskResponse)
-async def crawl_laws(req: CrawlRequest):
-    """触发爬取（后台任务）。
+async def crawl_laws(req: CrawlRequest, _user: str = Depends(require_registered_user)):
+    """触发爬取（后台任务）—— 需登录。
 
     数据源现仅支持 npc（全国人大「国家法律法规数据库」）。任务提交后返回
     task_id，通过 GET /api/crawl/status/{task_id} 查询进度与结果。

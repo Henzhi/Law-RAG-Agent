@@ -140,7 +140,8 @@ class IngestionPipeline:
 
             task["status"] = TaskStatus.DONE
             task["progress"] = 100
-            self._store.reindex()
+            # 注意：HNSW 索引支持增量插入，无需每文档 REINDEX（全量重建会锁表）。
+            # 批量导入结束后如需整理索引，由调用方显式执行一次 store.reindex()。
             logger.info(f"解析完成: {file_name} → {len(chunks)} 块")
             return len(chunks)
 
