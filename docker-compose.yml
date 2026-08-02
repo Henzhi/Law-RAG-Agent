@@ -23,6 +23,7 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - PG_ENABLED=true  # 关键：Dockerfile 不 COPY .env，此前 app 容器实际走 FAISS！
       - PG_CONN=postgresql://lawrag:lawrag123@db:5432/lawrag
       - PG_HOST=db
       - PG_PORT=5432
