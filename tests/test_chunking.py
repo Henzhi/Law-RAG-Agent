@@ -206,7 +206,7 @@ def test_chunk_config_defaults():
     cfg = ChunkConfig()
     assert cfg.min_chunk_chars == 50
     assert cfg.max_chunk_chars == 1500
-    assert cfg.merge_short_articles is True
+    assert cfg.merge_short_articles is False  # 默认不合并：条文独立成块，可定位到具体条文
     assert cfg.add_chapter_summary is True
 
 
@@ -215,6 +215,51 @@ def test_chunk_config_custom():
     assert cfg.min_chunk_chars == 100
     assert not cfg.merge_short_articles
     assert not cfg.add_chapter_summary
+
+
+def test_articles_are_not_merged_by_default():
+    """回归：默认不合并短条文，每条独立成块（召回可定位到具体条文）"""
+    from src.chunking.chunker import LawChunker
+    doc = LawDocument(
+        file_path="test.txt",
+        title="测试法",
+        parts=[],
+        chapters=[],
+        articles=[
+            Article(index=1, number="一", number_int=1, text="很短", content="很短"),
+            Article(index=2, number="二", number_int=2, text="也很短", content="也很短"),
+            Article(index=3, number="三", number_int=3, text="仍然很短", content="仍然很短"),
+        ],
+    )
+    chunker = LawChunker(ChunkConfig())
+    metas = [{"article_index": str(i), "chapter": "", "section": "",
+              "part": "", "law_name": "测试法"} for i in range(1, 4)]
+    chunks = chunker._chunk_articles(metas, doc)
+    assert len(chunks) == 3
+    assert all(c.metadata["article_count"] == "1" for c in chunks)
+
+
+def test_merged_chunks_keep_article_prefix():
+    """回归：开启合并时，合并块每条条文保留"第X条"前缀以便追溯"""
+    from src.chunking.chunker import LawChunker
+    doc = LawDocument(
+        file_path="test.txt",
+        title="测试法",
+        parts=[],
+        chapters=[],
+        articles=[
+            Article(index=1, number="一", number_int=1, text="很短", content="很短"),
+            Article(index=2, number="二", number_int=2, text="也很短", content="也很短"),
+        ],
+    )
+    chunker = LawChunker(ChunkConfig(merge_short_articles=True, max_merge_articles=3))
+    metas = [{"article_index": str(i), "chapter": "第一章", "section": "",
+              "part": "", "law_name": "测试法"} for i in range(1, 3)]
+    chunks = chunker._chunk_articles(metas, doc)
+    assert len(chunks) == 1
+    assert "第一条 很短" in chunks[0].page_content
+    assert "第二条 也很短" in chunks[0].page_content
+    assert chunks[0].metadata["article_count"] == "2"
 
 
 # ============================================================

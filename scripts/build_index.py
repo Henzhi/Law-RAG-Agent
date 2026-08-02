@@ -77,7 +77,7 @@ def cmd_build(args: argparse.Namespace) -> None:
     chunker = LawChunker(ChunkConfig(
         min_chunk_chars=args.min_chunk,
         max_chunk_chars=args.max_chunk,
-        merge_short_articles=not args.no_merge,
+        merge_short_articles=args.merge,
         add_chapter_summary=args.with_summary,
     ))
     all_chunks = chunker.chunk_documents(all_docs)
@@ -251,7 +251,8 @@ def main():
     p_build = sub.add_parser("build", help="全量构建")
     p_build.add_argument("--min-chunk", type=int, default=50)
     p_build.add_argument("--max-chunk", type=int, default=1500)
-    p_build.add_argument("--no-merge", action="store_true")
+    p_build.add_argument("--merge", action="store_true",
+                         help="合并短条文（默认不合并：每条条文独立成块，保证召回能定位到具体条文）")
     p_build.add_argument("--with-summary", action="store_true",
                          help="保留章级摘要 chunk（默认移除：其为结构性噪声，详见 ADR-001）")
     p_build.add_argument("--embed-model", default=None, help=f"默认: {EMBED_MODEL}")

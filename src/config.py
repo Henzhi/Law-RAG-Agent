@@ -119,7 +119,9 @@ RERANK_TOP_K = _safe_int("RERANK_TOP_K", 15)          # 精排后返回数
 
 # 连续片段扩展：检索后自动拉取相邻 ±N 条条文
 ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "true").lower() == "true"
-ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 3)     # ±N 条
+# 相邻扩展窗口：原默认 ±3 会把每条命中扩展成 7 条，引用列表被大量
+# "相邻但不相关"的条文污染；±1 仅保留紧邻上下文（引用仍以检索命中为主）
+ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 1)     # ±N 条
 
 
 # ---------------------------------------------------------------------------

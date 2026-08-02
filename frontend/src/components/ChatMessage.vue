@@ -18,9 +18,19 @@
         <span>引用条文 · {{ sources.length }} 条</span>
       </button>
       <ul v-if="srcOpen" class="src-list">
-        <li v-for="(s, i) in sources" :key="i">
-          <span class="src-name">{{ s.law_name }}</span>
-          <span class="src-citation">{{ s.citation }}</span>
+        <li v-for="(s, i) in sources" :key="i" class="src-item">
+          <button
+            class="src-head"
+            :class="{ expandable: !!s.content }"
+            @click="toggleSrc(i)"
+            :aria-expanded="expandedSources.includes(i)"
+          >
+            <svg v-if="s.content" :class="{ rotated: expandedSources.includes(i) }" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="11" height="11"><polyline points="9 18 15 12 9 6"/></svg>
+            <span class="src-name">{{ s.law_name }}</span>
+            <span class="src-citation">{{ s.citation }}</span>
+            <span v-if="s.content" class="src-hint">{{ expandedSources.includes(i) ? '收起' : '查看原文' }}</span>
+          </button>
+          <div v-if="s.content && expandedSources.includes(i)" class="src-content">{{ s.content }}</div>
         </li>
       </ul>
     </div>
@@ -38,6 +48,14 @@ const props = defineProps({
 
 const thinkingCollapsed = ref(true)
 const srcOpen = ref(true)
+// 已展开原文的条文索引（点击具体条文后才展示，避免直接堆出全部原文）
+const expandedSources = ref([])
+
+function toggleSrc(i) {
+  const idx = expandedSources.value.indexOf(i)
+  if (idx >= 0) expandedSources.value.splice(idx, 1)
+  else expandedSources.value.push(i)
+}
 
 const renderedContent = computed(() => {
   const text = props.message.content || ''
@@ -112,13 +130,33 @@ const renderedContent = computed(() => {
   font-size: 13px;
   color: var(--color-text-muted);
 }
-.src-list li {
-  padding: 3px 0;
-  display: flex;
-  gap: 8px;
-  align-items: baseline;
-  line-height: 1.5;
+.src-item {
+  padding: 8px 0;
+  border-top: 1px dashed var(--color-border);
+  line-height: 1.6;
 }
+.src-item:first-child { border-top: none; }
+.src-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 4px 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-body);
+  border-radius: 4px;
+}
+.src-head.expandable:hover { background: rgba(124, 58, 237, 0.08); }
+.src-head.expandable:hover .src-name { text-decoration: underline; }
+.src-head svg {
+  transition: transform 150ms ease;
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+.src-head svg.rotated { transform: rotate(90deg); }
 .src-name {
   color: var(--color-primary-dark);
   font-weight: 600;
@@ -126,6 +164,26 @@ const renderedContent = computed(() => {
 }
 .src-citation {
   color: var(--color-text-muted);
+}
+.src-hint {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+.src-content {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-text);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;   /* 保留法条换行 */
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;        /* 长法条可滚动 */
 }
 
 /* 思考过程折叠块 */

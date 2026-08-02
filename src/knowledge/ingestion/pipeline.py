@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 # 匹配条号，如「第二百三十二条」「第232条」
 _ARTICLE_RE = re.compile(r"第[一二三四五六七八九十百千零两0-9]+条")
 
+# 全文模式：这些 doc_type 整篇作为一个 chunk（直接全文召回，不切分）。
+# 默认空 = 全部按各自的差异化切分规则；需要全文召回时通过环境变量
+# FULLTEXT_DOC_TYPES="interpretation,case" 开启，或用 set_fulltext_doc_types() 设置
+FULLTEXT_DOC_TYPES: set[str] = set()
+
+
+def set_fulltext_doc_types(doc_types: list[str]) -> None:
+    """开启指定 doc_type 的全文模式（整篇一个 chunk，直接全文召回）。"""
+    global FULLTEXT_DOC_TYPES
+    FULLTEXT_DOC_TYPES = set(doc_types)
+
 
 def _extract_article_range(content: str) -> str:
     """从条文内容中提取首个条号，用于检索结果的「引用条文」展示。"""
@@ -246,50 +257,28 @@ class IngestionPipeline:
         max_chars: int = 500,
         title: str | None = None,
     ) -> list[dict]:
-        """按段落切分文本为块
+        """按文档类型差异化切分文本为块
 
-        法律文档以条文为天然段落边界，
-        每个「第X条」作为独立块，超长条文再按句号拆分。
+        - 条文体（law / regulation）：以「第X条」为天然边界，每个条文
+          独立成块（核心修复：此前按段落切分，条文间无空行时多个
+          「第X条」会被糅进同一块）。超长条文再按句号拆分，且每个续块
+          都保留条号前缀以便引用追溯。
+        - 非条文体（interpretation / case）：按自然段切分（叙事文/解释
+          文无「第X条」结构，不做条文/句子硬拆分，避免切碎语义脉络）。
+        - 全文模式：doc_type 位于 FULLTEXT_DOC_TYPES 时，整篇作为一个
+          chunk（直接全文召回，不切分）；仅当整篇超长时才保底按句号拆分。
         每个块会带上 law_name（文档标题）与 article_range（解析出的条号），
         供检索结果的「引用条文」展示使用。
         """
-        chunks: list[dict] = []
-        paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-
-        for para in paragraphs:
-            if len(para) <= max_chars:
-                chunks.append({
-                    "doc_id": doc_id,
-                    "chunk_type": "article" if doc_type == "law" else "summary",
-                    "content": para,
-                    "metadata": {"raw": para, "doc_type": doc_type},
-                })
-            else:
-                # 超长段落按句号拆分
-                sentences = para.split("。")
-                buf = ""
-                for s in sentences:
-                    s = s.strip()
-                    if not s:
-                        continue  # 跳过句号产生的空串（如段落以"。"结尾）
-                    s += "。"
-                    if len(buf) + len(s) > max_chars and buf:
-                        chunks.append({
-                            "doc_id": doc_id,
-                            "chunk_type": "article",
-                            "content": buf.strip(),
-                            "metadata": {"raw": para[:200], "doc_type": doc_type},
-                        })
-                        buf = s
-                    else:
-                        buf += s
-                if buf.strip():
-                    chunks.append({
-                        "doc_id": doc_id,
-                        "chunk_type": "article",
-                        "content": buf.strip(),
-                        "metadata": {"raw": para[:200], "doc_type": doc_type},
-                    })
+        # 全文模式：整篇一个 chunk，直接全文召回
+        if doc_type in FULLTEXT_DOC_TYPES:
+            chunks = _split_fulltext(text, doc_id, doc_type, max_chars=max_chars)
+        # 条文体：按「第X条」切分
+        elif doc_type in ("law", "regulation"):
+            chunks = _split_article_paragraphs(text, doc_id, doc_type, max_chars=max_chars)
+        # 非条文体（interpretation / case）：按自然段切分
+        else:
+            chunks = _split_paragraph_docs(text, doc_id, doc_type, max_chars=max_chars)
 
         # 补充法律引用字段到 metadata，供检索结果「引用条文」展示
         # （检索器从 document_chunks.metadata JSONB 读取 law_name / article_range）
@@ -300,3 +289,147 @@ class IngestionPipeline:
             meta["article_range"] = _extract_article_range(c["content"])
             meta["paragraph_index"] = i
         return chunks
+
+
+def _split_article_paragraphs(
+    text: str, doc_id: str, doc_type: str, max_chars: int = 500
+) -> list[dict]:
+    """条文体（law/interpretation/regulation）按「第X条」边界切分"""
+    chunks: list[dict] = []
+    segments = _split_by_articles(text)
+
+    for seg in segments:
+        if len(seg) <= max_chars:
+            chunks.append({
+                "doc_id": doc_id,
+                "chunk_type": "article",
+                "content": seg,
+                "metadata": {"raw": seg, "doc_type": doc_type},
+            })
+            continue
+
+        # 超长条文按句号拆分，每个续块都以条号开头，保证引用可追溯
+        head_m = _ARTICLE_RE.match(seg)
+        head = head_m.group(0) if head_m else ""
+        body = seg[len(head):].strip() if head else seg
+        sentences = body.split("。")
+        buf = head
+        for s in sentences:
+            s = s.strip()
+            if not s:
+                continue  # 跳过句号产生的空串（如段落以"。"结尾）
+            s += "。"
+            if len(buf) + len(s) > max_chars and buf.strip():
+                chunks.append({
+                    "doc_id": doc_id,
+                    "chunk_type": "article",
+                    "content": buf.strip(),
+                    "metadata": {"raw": seg[:200], "doc_type": doc_type},
+                })
+                buf = head  # 续块重新以条号开头
+            buf += s
+        if buf.strip():
+            chunks.append({
+                "doc_id": doc_id,
+                "chunk_type": "article",
+                "content": buf.strip(),
+                "metadata": {"raw": seg[:200], "doc_type": doc_type},
+            })
+    return chunks
+
+
+def _split_paragraph_docs(
+    text: str, doc_id: str, doc_type: str, max_chars: int = 500
+) -> list[dict]:
+    """非条文体（interpretation / case）：叙事/解释文，无「第X条」结构。
+
+    按自然段切分，不做条文/句子硬拆分（避免切碎案件事实、裁判理由的
+    连续性）。仅当单个段落超长时才按句号拆分。
+    """
+    chunks: list[dict] = []
+    paragraphs = [p.strip() for p in (text or "").split("\n\n") if p.strip()]
+    if not paragraphs and (text or "").strip():
+        paragraphs = [text.strip()]
+
+    for para in paragraphs:
+        if len(para) <= max_chars:
+            chunks.append({
+                "doc_id": doc_id,
+                "chunk_type": doc_type,
+                "content": para,
+                "metadata": {"raw": para, "doc_type": doc_type},
+            })
+            continue
+
+        # 超长段落按句号拆分（保底，不增加续块前缀）
+        sentences = para.split("。")
+        buf = ""
+        for s in sentences:
+            s = s.strip()
+            if not s:
+                continue
+            s += "。"
+            if len(buf) + len(s) > max_chars and buf:
+                chunks.append({
+                    "doc_id": doc_id,
+                    "chunk_type": doc_type,
+                    "content": buf.strip(),
+                    "metadata": {"raw": para[:200], "doc_type": doc_type},
+                })
+                buf = s
+            else:
+                buf += s
+        if buf.strip():
+            chunks.append({
+                "doc_id": doc_id,
+                "chunk_type": doc_type,
+                "content": buf.strip(),
+                "metadata": {"raw": para[:200], "doc_type": doc_type},
+            })
+    return chunks
+
+
+def _split_fulltext(
+    text: str, doc_id: str, doc_type: str, max_chars: int = 500
+) -> list[dict]:
+    """全文模式：整篇文档作为单个 chunk，直接全文召回不切分。
+
+    仅当整篇超过 max_chars 时才保底按句号拆分（embedding 有长度上限）。
+    """
+    content = (text or "").strip()
+    if not content:
+        return []
+    if len(content) <= max_chars:
+        return [{
+            "doc_id": doc_id,
+            "chunk_type": doc_type,
+            "content": content,
+            "metadata": {"raw": content, "doc_type": doc_type},
+        }]
+    # 超长整篇保底拆分
+    return _split_paragraph_docs(text, doc_id, doc_type, max_chars=max_chars)
+
+
+def _split_by_articles(text: str) -> list[str]:
+    """按「第X条」边界把文本切为条文段列表（含前导非条文段，如序言）。
+
+    找不到条文标记时回退为按空行切段，避免整篇被当做一个块。
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    matches = list(_ARTICLE_RE.finditer(text))
+    if not matches:
+        return [p.strip() for p in text.split("\n\n") if p.strip()] or [text]
+
+    segments: list[str] = []
+    prev = 0
+    for m in matches:
+        lead = text[prev:m.start()].strip()
+        if lead:
+            segments.append(lead)
+        prev = m.start()
+    tail = text[prev:].strip()
+    if tail:
+        segments.append(tail)
+    return segments

@@ -35,7 +35,11 @@ class ChunkConfig:
     """切分配置"""
     min_chunk_chars: int = 50          # 短于该值的单个 chunk 会和相邻合并
     max_chunk_chars: int = 1500        # 单 chunk 最大长度（超过则强制拆分）
-    merge_short_articles: bool = True  # 是否合并短条文
+    # 默认不合并短条文：法律条文是最小语义单元，合并后整块召回无法定位
+    # 到具体条文，且 embedding 语义被稀释（"算哪一条"问题）。
+    # 确需合并时须开启，且每条会保留条号前缀以便追溯。
+    merge_short_articles: bool = False
+    max_merge_articles: int = 3        # 最多合并条数（防止"第一条至第N条"大杂烩）
     add_chapter_summary: bool = True   # 是否为每章生成摘要 chunk
     context_prefix_template: str = (
         '【{law_name}】{part}{chapter}{section}'
@@ -160,7 +164,12 @@ class LawChunker:
             nonlocal buffer_chars
             if not buffer_texts:
                 return
-            merged_text = self.cfg.article_separator.join(buffer_texts)
+            # 合并时每条条文强制保留条号前缀（如"第三条 因行贿……"），
+            # 保证召回后能追溯"这是哪一条"，避免多条正文无法区分
+            merged_text = self.cfg.article_separator.join(
+                f'第{doc.articles[int(m["article_index"]) - 1].number}条 {t}'
+                for m, t in zip(buffer_metas, buffer_texts)
+            )
             # 以第一条的上下文件为主体元数据
             first_meta = buffer_metas[0]
             prefix = _build_context_prefix(first_meta, self.cfg)
@@ -197,16 +206,31 @@ class LawChunker:
                 ))
                 continue
 
-            # 缓冲区满了
-            if buffer_chars + len(text) > self.cfg.max_chunk_chars:
+            # 能否并入当前缓冲区（默认 merge_short_articles=False → 不合并，每条独立成块）：
+            # 1) 开启了短条文合并
+            # 2) 缓冲区非空
+            # 3) 与缓冲首条同章（禁止跨章糅合）
+            # 4) 未达合并条数上限（防止"第一条至第N条"大杂烩）
+            can_merge = (
+                self.cfg.merge_short_articles
+                and bool(buffer_metas)
+                and buffer_metas[0].get('chapter') == meta.get('chapter')
+                and len(buffer_metas) < self.cfg.max_merge_articles
+            )
+
+            # 缓冲区满了 或 不可合并 → 先 flush
+            if buffer_chars + len(text) > self.cfg.max_chunk_chars or (buffer_metas and not can_merge):
                 _flush()
 
             buffer_texts.append(text)
             buffer_metas.append(meta)
             buffer_chars += len(text)
 
-            # 如果当前条文已够长（>= min_chunk_chars），flush
-            if self.cfg.merge_short_articles and buffer_chars >= self.cfg.min_chunk_chars:
+            # 未开启合并：每条立即独立成块
+            if not self.cfg.merge_short_articles:
+                _flush()
+            # 开启合并：当前条文已够长（>= min_chunk_chars）才出块
+            elif buffer_chars >= self.cfg.min_chunk_chars:
                 _flush()
 
         _flush()  # 处理末尾残留

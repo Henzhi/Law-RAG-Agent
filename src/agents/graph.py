@@ -203,7 +203,18 @@ class LawAgentGraph:
             if docs:
                 citations = [d.get("citation", "") for d in docs[:5]]
                 yield {"type": "thinking", "content": f"📖 引用: {', '.join(citations)}"}
-            sources = [{"law_name": d.get("law_name", ""), "citation": d.get("citation", ""), "score": 0.0} for d in docs]
+            sources = [
+                {
+                    "law_name": d.get("law_name", ""),
+                    "chapter": d.get("chapter", ""),
+                    "section": d.get("section", ""),
+                    "article_range": d.get("article_range", ""),
+                    "citation": d.get("citation", ""),
+                    "score": 0.0,
+                    "content": d.get("content", ""),
+                }
+                for d in docs
+            ]
             yield {"type": "meta", "sources": sources, "is_casual": False}
 
             # 5. Generate

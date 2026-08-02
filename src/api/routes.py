@@ -260,7 +260,8 @@ async def chat_stream(req: ChatRequest):
 
             sources = [
                 {"law_name": s.law_name, "chapter": s.chapter,
-                 "article_range": s.article_range, "citation": s.citation, "score": float(s.score)}
+                 "article_range": s.article_range, "citation": s.citation,
+                 "score": float(s.score), "content": s.content}
                 for s in docs
             ]
             yield _sse({"type": "meta", "sources": sources, "is_casual": False})
@@ -375,6 +376,25 @@ def _dicts_to_retrieved(docs: list[dict]) -> list:
             "score": float(d.get("score", 0)),
         })())
     return result
+
+
+def _sources_with_content(sources: list) -> list[dict]:
+    """将 RetrievedDoc/兼容对象序列化为含条文原文 content 的 sources 列表。
+
+    供 agent 路径返回引用条文时带上原文，前端可折叠查看完整法条。
+    """
+    return [
+        {
+            "law_name": s.law_name,
+            "chapter": s.chapter,
+            "section": getattr(s, "section", ""),
+            "article_range": s.article_range,
+            "citation": s.citation,
+            "score": float(s.score),
+            "content": getattr(s, "content", ""),
+        }
+        for s in sources
+    ]
 
 
 # ---------------------------------------------------------------------------

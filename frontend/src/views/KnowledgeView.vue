@@ -39,14 +39,23 @@
 
         <div class="file-input-row">
           <label class="file-label">
-            <input type="file" accept=".pdf,.docx,.txt" @change="onFileChange" />
+            <input type="file" accept=".pdf,.docx,.txt" multiple @change="onFileChange" />
             <span class="file-btn">选择文件</span>
           </label>
-          <span class="file-name">{{ file ? file.name : '未选择文件' }}</span>
+          <span class="file-name">{{ files.length ? `已选 ${files.length} 个文件` : '未选择文件（可多选）' }}</span>
         </div>
 
-        <button type="submit" :disabled="!file || uploading" class="btn-upload">
-          {{ uploading ? '上传中...' : '开始上传' }}
+        <!-- 待上传文件清单 -->
+        <ul v-if="files.length" class="file-list">
+          <li v-for="(f, i) in files" :key="f.name + i" class="file-list-item">
+            <span class="file-list-name">{{ f.name }}</span>
+            <span class="file-list-size">{{ (f.size / 1024).toFixed(0) }}KB</span>
+            <button type="button" class="file-list-remove" @click="removeFile(i)" :disabled="uploading">×</button>
+          </li>
+        </ul>
+
+        <button type="submit" :disabled="!files.length || uploading" class="btn-upload">
+          {{ uploading ? '上传中...' : `开始上传（${files.length} 个文件）` }}
         </button>
 
         <p v-if="uploadError" class="error">{{ uploadError }}</p>
@@ -54,18 +63,19 @@
       </form>
     </div>
 
-    <!-- 上传任务进度 -->
-    <div v-if="taskId" class="task-section">
-      <h3>处理进度</h3>
-      <div class="task-card">
+    <!-- 批量上传任务进度 -->
+    <div v-if="tasks.length" class="task-section">
+      <h3>批量处理进度（{{ doneCount }}/{{ tasks.length }}）</h3>
+      <div v-for="(t, i) in tasks" :key="t.task_id || i + '-' + t.file_name" class="task-card">
         <div class="task-row">
-          <span class="task-id">任务: {{ taskId.slice(0, 8) }}...</span>
-          <span class="task-status" :class="taskStatus">{{ taskStatusText }}</span>
+          <span class="task-id" :title="t.file_name">{{ t.file_name }}</span>
+          <span class="task-status" :class="t.status">{{ taskStatusText(t.status) }}</span>
         </div>
         <div class="progress-bar">
-          <div class="progress-fill" :style="{ width: taskProgress + '%' }"></div>
+          <div class="progress-fill" :style="{ width: t.progress + '%' }"></div>
         </div>
-        <div class="progress-text">{{ taskProgress }}%</div>
+        <div class="progress-text">{{ t.progress }}%</div>
+        <div v-if="t.error" class="task-error">{{ t.error }}</div>
       </div>
     </div>
 
@@ -102,7 +112,10 @@
             <td class="source-cell">{{ doc.source || '-' }}</td>
             <td class="num-cell">{{ doc.chunks }}</td>
             <td class="date-cell">{{ formatDate(doc.created_at) }}</td>
-            <td>
+            <td class="actions-cell">
+              <button class="btn-view" @click="viewDocument(doc)" :disabled="viewing === doc.id">
+                {{ viewing === doc.id ? '加载中...' : '查看' }}
+              </button>
               <button class="btn-delete" @click="confirmDelete(doc)" :disabled="deleting === doc.id">
                 {{ deleting === doc.id ? '删除中...' : '删除' }}
               </button>
@@ -128,12 +141,39 @@
         </div>
       </div>
     </div>
+
+    <!-- 查看原文弹窗 -->
+    <div v-if="viewTarget" class="modal-overlay" @click.self="viewTarget = null">
+      <div class="modal modal-wide">
+        <h3>{{ viewTarget.title }}</h3>
+        <div class="view-meta">
+          <span v-if="viewTarget.doc_type">类型: {{ typeLabel(viewTarget.doc_type) }}</span>
+          <span v-if="viewTarget.source">来源: {{ viewTarget.source }}</span>
+          <span v-if="viewTarget.effective_date">生效: {{ viewTarget.effective_date }}</span>
+          <span>{{ viewChunks.length }} 个条文块</span>
+        </div>
+        <div class="view-loading" v-if="viewLoading">正在加载原文...</div>
+        <div class="view-empty" v-else-if="!viewChunks.length">该文档暂无内容</div>
+        <div v-else class="view-body">
+          <div v-for="(c, i) in viewChunks" :key="c.id" class="chunk-item">
+            <div class="chunk-head">
+              <span class="chunk-index">{{ i + 1 }}</span>
+              <span class="chunk-type">{{ chunkTypeLabel(c.chunk_type) }}</span>
+            </div>
+            <pre class="chunk-content">{{ c.content }}</pre>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-cancel" @click="viewTarget = null">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument } from '../api'
+import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getDocumentChunks } from '../api'
 
 // --- 文档列表 ---
 const documents = ref([])
@@ -150,6 +190,29 @@ async function loadDocuments() {
     console.error('加载文档列表失败:', e)
   } finally {
     loading.value = false
+  }
+}
+
+// --- 查看原文 ---
+const viewTarget = ref(null)
+const viewChunks = ref([])
+const viewLoading = ref(false)
+const viewing = ref(null)
+
+async function viewDocument(doc) {
+  viewing.value = doc.id
+  viewTarget.value = doc
+  viewChunks.value = []
+  viewLoading.value = true
+  try {
+    const res = await getDocumentChunks(doc.id)
+    viewChunks.value = res.chunks || []
+  } catch (e) {
+    alert('加载原文失败: ' + e.message)
+    viewTarget.value = null
+  } finally {
+    viewLoading.value = false
+    viewing.value = null
   }
 }
 
@@ -176,80 +239,111 @@ async function doDelete() {
   }
 }
 
-// --- 上传 ---
+// --- 上传（多文件并行） ---
 const showUpload = ref(false)
 const docType = ref('law')
 const source = ref('')
 const effectiveDate = ref('')
-const file = ref(null)
+const files = ref([])          // 待上传文件数组
 const uploading = ref(false)
 const uploadError = ref('')
 const uploadOk = ref('')
-const taskId = ref('')
-const taskStatus = ref('')
-const taskProgress = ref(0)
+const tasks = ref([])          // 上传/处理任务队列，每文件一个
+const MAX_CONCURRENCY = 3      // 并行上传并发上限，避免同时打垮后端
 
-const taskDone = computed(() => taskStatus.value === 'done')
-const taskStatusText = computed(() => ({
+const doneCount = computed(() => tasks.value.filter(t => t.status === 'done' || t.status === 'failed').length)
+const taskStatusText = (s) => ({
   pending: '等待处理', parsing: '解析中', chunking: '分块中',
   embedding: '向量化中', indexing: '索引中', done: '完成', failed: '失败'
-}[taskStatus.value] || taskStatus.value))
+}[s] || s)
 
 const ALLOWED_TYPES = ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'text/plain']
 const MAX_SIZE = 50 * 1024 * 1024
 
 function onFileChange(e) {
-  const f = e.target.files[0] || null
   uploadError.value = ''
   uploadOk.value = ''
-  if (!f) { file.value = null; return }
-  if (!ALLOWED_TYPES.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
-    uploadError.value = '仅支持 PDF、DOCX、TXT 文件'
-    file.value = null
-    e.target.value = ''
-    return
+  const list = Array.from(e.target.files || [])
+  const valid = []
+  for (const f of list) {
+    if (!ALLOWED_TYPES.includes(f.type) && !f.name.match(/\.(pdf|docx|txt)$/i)) {
+      uploadError.value += `跳过不支持的文件: ${f.name}\n`
+      continue
+    }
+    if (f.size > MAX_SIZE) {
+      uploadError.value += `跳过超大文件: ${f.name}（>50MB）\n`
+      continue
+    }
+    valid.push(f)
   }
-  if (f.size > MAX_SIZE) {
-    uploadError.value = `文件过大（${(f.size / 1024 / 1024).toFixed(1)}MB），最大 50MB`
-    file.value = null
-    e.target.value = ''
-    return
-  }
-  file.value = f
+  files.value = valid
+  e.target.value = ''
 }
 
+function removeFile(i) {
+  if (uploading.value) return
+  files.value.splice(i, 1)
+}
+
+/** 并发控制器：最多 MAX_CONCURRENCY 个任务同时跑 */
+async function mapLimit(items, limit, fn) {
+  const results = []
+  let idx = 0
+  async function worker() {
+    while (idx < items.length) {
+      const cur = idx++
+      results[cur] = await fn(items[cur], cur)
+    }
+  }
+  const workers = Array.from({ length: Math.min(limit, items.length) }, worker)
+  await Promise.all(workers)
+  return results
+}
+
+/** 并行上传所有文件，每个文件独立任务并轮询状态 */
 async function handleUpload() {
-  if (!file.value) return
+  if (!files.value.length) return
   uploading.value = true
   uploadError.value = ''
   uploadOk.value = ''
-  try {
-    const res = await uploadDocument(file.value, docType.value, source.value, effectiveDate.value)
-    taskId.value = res.task_id
-    taskStatus.value = res.status
-    taskProgress.value = 0
-    uploadOk.value = res.message
-    pollStatus()
-  } catch (e) {
-    uploadError.value = e.message
-  } finally {
-    uploading.value = false
-  }
+  tasks.value = files.value.map((f) => ({
+    file_name: f.name,
+    task_id: '',
+    status: 'pending',
+    progress: 0,
+  }))
+
+  await mapLimit(files.value, MAX_CONCURRENCY, async (f, i) => {
+    const t = tasks.value[i]
+    try {
+      const res = await uploadDocument(f, docType.value, source.value, effectiveDate.value)
+      t.task_id = res.task_id
+      t.status = res.status || 'pending'
+      uploadOk.value = `已提交 ${f.name}`
+      pollTask(t)
+    } catch (e) {
+      t.status = 'failed'
+      t.progress = 0
+      t.error = e.message
+    }
+  })
+
+  uploading.value = false
+  files.value = [] // 清空待传列表，任务队列保留展示
 }
 
-function pollStatus() {
+/** 轮询单个任务状态直到完成/失败 */
+function pollTask(t) {
   const timer = setInterval(async () => {
+    if (!t.task_id) return
     try {
-      const s = await getIngestionStatus(taskId.value)
-      taskStatus.value = s.status
-      taskProgress.value = s.progress || 0
+      const s = await getIngestionStatus(t.task_id)
+      t.status = s.status
+      t.progress = s.progress || 0
       if (s.status === 'done' || s.status === 'failed') {
         clearInterval(timer)
-        if (s.status === 'done') {
-          uploadOk.value = '解析完成！已添加到知识库'
-          loadDocuments() // 刷新列表
-        }
-        if (s.status === 'failed') uploadError.value = s.error || '处理失败'
+        if (s.status === 'done') loadDocuments() // 全部完成后刷新一次
+        else t.error = s.error || '处理失败'
       }
     } catch { /* ignore */ }
   }, 2000)
@@ -258,6 +352,10 @@ function pollStatus() {
 // --- 工具函数 ---
 function typeLabel(t) {
   return { law: '法律', interpretation: '司法解释', case: '典型案例', regulation: '地方法规' }[t] || t
+}
+
+function chunkTypeLabel(t) {
+  return { article: '法条', case: '案例段落', summary: '章摘要', judgment: '判决要点', guideline: '指导要点' }[t] || (t || '正文')
 }
 
 function formatDate(d) {
@@ -297,6 +395,14 @@ onMounted(() => {
 .file-label input[type="file"] { display: none; }
 .file-btn { display: inline-block; padding: 8px 20px; background: var(--color-primary-light); color: var(--color-primary-dark); border-radius: var(--radius); font-size: 14px; font-weight: 500; }
 .file-name { font-size: 13px; color: var(--color-text-muted); }
+.file-list { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--color-border); border-radius: var(--radius); overflow: hidden; }
+.file-list-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; border-top: 1px solid var(--color-border); }
+.file-list-item:first-child { border-top: none; }
+.file-list-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-list-size { color: var(--color-text-muted); flex-shrink: 0; }
+.file-list-remove { border: none; background: none; color: var(--color-text-muted); font-size: 16px; cursor: pointer; padding: 0 4px; flex-shrink: 0; }
+.file-list-remove:hover { color: var(--color-error); }
+.file-list-remove:disabled { cursor: not-allowed; opacity: 0.4; }
 .btn-upload { padding: 10px 24px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); font-size: 15px; cursor: pointer; align-self: flex-start; }
 .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
 .error { color: var(--color-error); font-size: 13px; }
@@ -305,7 +411,9 @@ onMounted(() => {
 /* Task progress */
 .task-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
 .task-section h3 { margin-bottom: 12px; font-size: 16px; }
-.task-card { display: flex; flex-direction: column; gap: 10px; }
+.task-card { display: flex; flex-direction: column; gap: 10px; padding-bottom: 14px; border-bottom: 1px dashed var(--color-border); margin-bottom: 14px; }
+.task-card:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
+.task-error { color: var(--color-error); font-size: 12px; }
 .task-row { display: flex; justify-content: space-between; align-items: center; }
 .task-id { font-family: monospace; font-size: 13px; }
 .task-status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--color-primary-light); color: var(--color-primary-dark); }
@@ -339,9 +447,25 @@ onMounted(() => {
 .type-badge.case { background: #FEF3C7; color: #92400E; }
 .type-badge.regulation { background: #D1FAE5; color: #065F46; }
 
+.actions-cell { white-space: nowrap; }
+.btn-view { padding: 4px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-primary-light); color: var(--color-primary-dark); cursor: pointer; font-size: 13px; margin-right: 6px; }
+.btn-view:hover { background: #EDE9FE; }
+.btn-view:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-delete { padding: 4px 12px; border: 1px solid #FECACA; border-radius: var(--radius); background: #FEF2F2; color: #DC2626; cursor: pointer; font-size: 13px; }
 .btn-delete:hover { background: #FEE2E2; }
 .btn-delete:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* 查看原文 */
+.modal-wide { max-width: 760px; width: 92%; }
+.view-meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--color-text-muted); font-size: 13px; margin-bottom: 12px; }
+.view-loading { text-align: center; color: var(--color-text-muted); padding: 32px; }
+.view-empty { text-align: center; color: var(--color-text-muted); padding: 32px; }
+.view-body { max-height: 60vh; overflow-y: auto; padding-right: 4px; }
+.chunk-item { margin-bottom: 12px; border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; }
+.chunk-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--color-primary-light); border-bottom: 1px solid var(--color-border); }
+.chunk-index { font-weight: 600; color: var(--color-primary-dark); font-size: 13px; }
+.chunk-type { font-size: 12px; color: var(--color-text-muted); }
+.chunk-content { margin: 0; padding: 12px; font-size: 14px; line-height: 1.8; color: var(--color-text); white-space: pre-wrap; word-break: break-word; font-family: var(--font-body); }
 
 /* Modal */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }

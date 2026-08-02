@@ -39,6 +39,7 @@ class ChatResponse(BaseModel):
                     "article_range": s.article_range,
                     "citation": s.citation,
                     "score": float(s.score),  # FAISS 返回 numpy.float32，需转 Python float
+                    "content": getattr(s, "content", ""),  # 条文原文，供前端查看
                 }
                 for s in sources
             ],
