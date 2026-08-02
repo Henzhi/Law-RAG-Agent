@@ -119,7 +119,7 @@ class RAGEngine:
     ):
         """
         Args:
-            retriever: 检索器（FAISS 或 pgvector）
+            retriever: 检索器（pgvector）
             llm: LLM 客户端
             top_k: 每次检索返回的文档数
             prompt_template: 自定义提示词模板
@@ -241,19 +241,3 @@ class RAGEngine:
         if "\n" in content and content.startswith("【"):
             content = content.split("\n", 1)[1]
         return content.strip()
-
-
-# ---------------------------------------------------------------------------
-# 工厂函数
-# ---------------------------------------------------------------------------
-
-def create_rag_engine(
-    vector_store,
-    llm: LawLLM,
-    top_k: int = 5,
-) -> RAGEngine:
-    """快速创建 RAG 引擎（FAISS 检索器）"""
-    from .retriever import FAISSRetriever
-
-    retriever = FAISSRetriever(vector_store)
-    return RAGEngine(retriever=retriever, llm=llm, top_k=top_k)

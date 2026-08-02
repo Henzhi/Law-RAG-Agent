@@ -144,8 +144,8 @@ class NpcLawCrawler:
             force   : 强制重爬已存在的文档
             subdir  : 覆盖输出子目录名（默认按 doc_type 自动）
             store   : 输出目标，可组合:
-                      "txt"  -> 落地到 LawData/<子目录>/*.txt（供 FAISS 索引）
-                      "pg"   -> 直接写入 pgvector（需 PG_ENABLED=true）
+                      "pg"   -> 直接写入 pgvector（推荐，默认）
+                      "txt"  -> 落地到 LawData/<子目录>/*.txt（原始文本存档）
                       "both" -> 两者都做
             progress_cb: 每处理一条后回调 CrawlResult，用于进度上报
         """
@@ -222,7 +222,7 @@ class NpcLawCrawler:
                 if not text or len(text) < 30:
                     raise ValueError("正文为空或过短")
 
-                # 1) 落地 txt（供 FAISS 索引，增量按 manifest/bbbs）
+                # 1) 落地 txt（原始文本存档，增量按 manifest/bbbs）
                 if do_txt and not txt_skip:
                     rel_path = self._save(out_dir, doc_id, title, text, effective_date)
                     manifest[doc_id] = asdict(_ManifestEntry(

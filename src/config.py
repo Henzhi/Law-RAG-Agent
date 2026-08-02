@@ -98,8 +98,6 @@ EMBED_MAX_RETRIES = _safe_int("EMBED_MAX_RETRIES", 3)
 # ---------------------------------------------------------------------------
 
 RETRIEVAL_TOP_K = _safe_int("RETRIEVAL_TOP_K", 5)
-RETRIEVAL_HYBRID_ENABLED = os.getenv("RETRIEVAL_HYBRID_ENABLED", "false").lower() == "true"
-RETRIEVAL_BM25_WEIGHT = _safe_float("RETRIEVAL_BM25_WEIGHT", 0.0)
 
 # 检索时是否过滤章级摘要 chunk（噪声大，评测已验证应过滤）
 # 在检索层统一拦截，避免运行时出现 30+ 条无关条文被召回的问题
@@ -128,8 +126,7 @@ ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 1)     # ±N 条
 # 向量索引
 # ---------------------------------------------------------------------------
 
-INDEX_NAME = os.getenv("INDEX_NAME", "law_index")
-INDEX_DIR = _PROJECT_ROOT / os.getenv("INDEX_DIR", "data/vector_store")
+
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ Embedding 后端抽象基类。
 定义统一的向量化接口，支持 Ollama 和 OpenAI 兼容 API 两种后端。
 所有后端实现必须继承此基类并实现对应方法。
 
-同时提供 LangChain Embeddings 兼容包装器，用于 FAISS / LangChain 集成。
+同时提供 LangChain Embeddings 兼容包装器，用于 LangChain 兼容的向量库集成。
 """
 from __future__ import annotations
 

@@ -2,7 +2,7 @@
 LLM / Embedding 后端适配器。
 
 将新的 LLMBackend / EmbeddingBackend 适配为旧 API，使现有代码
-（RAGEngine、LawAgentGraph、FAISSRetriever 等）无需改动即可使用新后端。
+（RAGEngine、LawAgentGraph、PgvectorStoreRetriever 等）无需改动即可使用新后端。
 
 过渡方案：Phase 1 阶段使用，后续逐步替换为直接使用新 API。
 """
@@ -108,7 +108,7 @@ class LLMAdapter:
 class EmbeddingAdapter:
     """将 EmbeddingBackend 适配为旧 LawEmbedder 兼容接口
 
-    实现 LangChain Embeddings 接口，可直接用于 FAISS 向量库。
+    实现 LangChain Embeddings 接口，可直接用于 pgvector 向量库。
     """
 
     def __init__(self, backend: EmbeddingBackend):

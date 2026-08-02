@@ -23,7 +23,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - PG_ENABLED=true  # 关键：Dockerfile 不 COPY .env，此前 app 容器实际走 FAISS！
+      - PG_ENABLED=true  # 关键：Dockerfile 不 COPY .env，必须显式开启 pgvector（v0.6 纯 PG，无 FAISS 回退）
       - PG_CONN=postgresql://lawrag:lawrag123@db:5432/lawrag
       - PG_HOST=db
       - PG_PORT=5432
@@ -37,7 +37,6 @@ services:
       - ADJACENT_ENABLED=true
       - RETRIEVAL_SIM_THRESHOLD=${RETRIEVAL_SIM_THRESHOLD:-0.4}
       - AGENT_ENABLED=false
-      - INDEX_NAME=${INDEX_NAME:-law_index}
     depends_on:
       db:
         condition: service_healthy

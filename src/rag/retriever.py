@@ -1,15 +1,13 @@
 """
-检索器抽象接口与 FAISS 实现。
+检索器抽象接口与 pgvector 实现。
 
-设计目标：将检索层抽成接口，后续切换 pgvector 只需新建一个实现类。
+v0.6: 移除 FAISS 后端，检索层统一走 pgvector（纯 PG 架构）。
 """
 from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-
-from langchain_core.documents import Document
 
 from src.config import RETRIEVAL_DROP_SUMMARY_CHUNKS, RETRIEVAL_SIM_THRESHOLD
 
@@ -42,6 +40,24 @@ class RetrievedDoc:
         return " · ".join(parts)
 
 
+def doc_to_retrieved(doc, score: float) -> RetrievedDoc:
+    """将带 metadata 的文档对象（LangChain Document 等）转换为 RetrievedDoc。
+
+    字段映射：law_name / chapter / section / article_range / chunk_type
+    取自 metadata，content 取文档正文。
+    """
+    meta = getattr(doc, "metadata", {}) or {}
+    return RetrievedDoc(
+        content=doc.page_content,
+        score=round(score, 4),
+        law_name=meta.get("law_name", ""),
+        chapter=meta.get("chapter", ""),
+        section=meta.get("section", ""),
+        article_range=meta.get("article_range", ""),
+        chunk_type=meta.get("chunk_type", ""),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 抽象检索器
 # ---------------------------------------------------------------------------
@@ -61,75 +77,7 @@ class BaseRetriever(ABC):
 
 
 # ---------------------------------------------------------------------------
-# FAISS 检索器实现
-# ---------------------------------------------------------------------------
-
-class FAISSRetriever(BaseRetriever):
-    """基于 FAISS 向量库的检索器"""
-
-    def __init__(self, vector_store):
-        """
-        Args:
-            vector_store: VectorStore 实例（已 build 或 load）
-        """
-        self._store = vector_store
-
-    def search(self, query: str, top_k: int = 5, doc_type: str | None = None) -> list[RetrievedDoc]:
-        """语义检索 — doc_type 参数在 FAISS 模式下忽略（兼容接口）"""
-        results = self._store.search_with_score(query, k=top_k)
-        docs = [self._to_retrieved(doc, score) for doc, score in results]
-        if RETRIEVAL_DROP_SUMMARY_CHUNKS:
-            docs = [d for d in docs if d.chunk_type != "chapter_summary"]
-        return self._apply_sim_threshold(docs, top_k)
-
-    def search_by_law(self, query: str, law_name: str, top_k: int = 5) -> list[RetrievedDoc]:
-        """在指定法律内检索"""
-        results = self._store.search_with_score(query, k=top_k, filter_dict={"law_name": law_name})
-        docs = [self._to_retrieved(doc, score) for doc, score in results]
-        if RETRIEVAL_DROP_SUMMARY_CHUNKS:
-            docs = [d for d in docs if d.chunk_type != "chapter_summary"]
-        return self._apply_sim_threshold(docs, top_k)
-
-    def _apply_sim_threshold(self, docs: list[RetrievedDoc], top_k: int) -> list[RetrievedDoc]:
-        """按向量相似度阈值过滤召回结果。
-
-        RETRIEVAL_SIM_THRESHOLD <= 0 时关闭（返回原结果）；
-        过滤后为空则回退保留原结果，避免线上完全哑火。
-        """
-        if RETRIEVAL_SIM_THRESHOLD <= 0 or not docs:
-            return docs
-        filtered = [d for d in docs if d.score >= RETRIEVAL_SIM_THRESHOLD]
-        if not filtered:
-            logger.warning(
-                f"[retriever] 向量相似度阈值 {RETRIEVAL_SIM_THRESHOLD} 过滤后无候选，"
-                f"回退保留原 {len(docs)} 条结果以避免哑火"
-            )
-            return docs
-        return filtered[:top_k]
-
-    def is_ready(self) -> bool:
-        return self._store.store is not None and self._store.doc_count > 0
-
-    @staticmethod
-    def _to_retrieved(doc: Document, score: float) -> RetrievedDoc:
-        meta = doc.metadata
-        return RetrievedDoc(
-            content=doc.page_content,
-            score=round(score, 4),
-            law_name=meta.get("law_name", ""),
-            chapter=meta.get("chapter", ""),
-            section=meta.get("section", ""),
-            article_range=meta.get("article_range", ""),
-            chunk_type=meta.get("chunk_type", ""),
-        )
-
-
-# ---------------------------------------------------------------------------
-# pgvector 检索器
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# pgvector v2 检索器（基于 PgvectorStore，v0.5 默认）
+# pgvector v2 检索器（基于 PgvectorStore，纯 PG 默认）
 # ---------------------------------------------------------------------------
 
 class PgvectorStoreRetriever(BaseRetriever):

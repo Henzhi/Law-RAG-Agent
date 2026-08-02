@@ -8,7 +8,7 @@ from src.chunking.chunker import (
     _make_article_range_text,
     ChunkConfig,
 )
-from src.rag.retriever import RetrievedDoc, FAISSRetriever
+from src.rag.retriever import RetrievedDoc, doc_to_retrieved
 from langchain_core.documents import Document
 
 
@@ -293,10 +293,10 @@ def test_retrieved_doc_citation_empty():
 
 
 # ============================================================
-# FAISSRetriever._to_retrieved
+# doc_to_retrieved — 文档对象 → RetrievedDoc 转换
 # ============================================================
 
-def test_to_retrieved_basic():
+def test_doc_to_retrieved_basic():
     lc_doc = Document(
         page_content="条文正文内容",
         metadata={
@@ -307,7 +307,7 @@ def test_to_retrieved_basic():
             "chunk_type": "article",
         },
     )
-    rd = FAISSRetriever._to_retrieved(lc_doc, 0.95)
+    rd = doc_to_retrieved(lc_doc, 0.95)
     assert rd.content == "条文正文内容"
     assert rd.score == 0.95
     assert rd.law_name == "测试法"
@@ -317,16 +317,16 @@ def test_to_retrieved_basic():
     assert rd.chunk_type == "article"
 
 
-def test_to_retrieved_missing_metadata():
+def test_doc_to_retrieved_missing_metadata():
     lc_doc = Document(page_content="正文", metadata={})
-    rd = FAISSRetriever._to_retrieved(lc_doc, 0.5)
+    rd = doc_to_retrieved(lc_doc, 0.5)
     assert rd.content == "正文"
     assert rd.score == 0.5
     assert rd.law_name == ""
     assert rd.chapter == ""
 
 
-def test_to_retrieved_score_rounding():
+def test_doc_to_retrieved_score_rounding():
     lc_doc = Document(page_content="x", metadata={})
-    rd = FAISSRetriever._to_retrieved(lc_doc, 0.1234567)
+    rd = doc_to_retrieved(lc_doc, 0.1234567)
     assert rd.score == 0.1235  # round to 4 decimal places

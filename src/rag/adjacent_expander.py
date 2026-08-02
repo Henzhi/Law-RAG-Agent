@@ -31,7 +31,7 @@ class AdjacentExpander(BaseRetriever):
     ):
         """
         Args:
-            base_retriever: 基础检索器 (FAISS / pgvector / Hybrid / Reranker)
+            base_retriever: 基础检索器 (pgvector / Reranker 装饰链)
             article_map_path: article_map.json 文件路径
             window: 相邻窗口大小，±window 条
         """

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """应用生命周期：启动时预热（FAISS 加载 ~3s 提前到启动时消耗）"""
+    """应用生命周期：启动时预热（pgvector 连接 + 模型加载提前到启动时消耗）"""
     from src.config import AGENT_ENABLED
     if AGENT_ENABLED:
         from .dependencies import get_agent

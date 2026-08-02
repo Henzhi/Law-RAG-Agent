@@ -11,7 +11,7 @@
 | LLM | Ollama + Qwen2.5:7b |
 | Embedding | Ollama + bge-m3 (1024d) |
 | Reranker | bge-reranker-v2-m3 (Cross-Encoder) |
-| 向量索引 | FAISS IndexFlatIP |
+| 向量索引 | pgvector (halfvec + HNSW) |
 | Agent 框架 | LangGraph 1.2 |
 | 后端 | Python 3.12 / FastAPI 0.115 / LangChain |
 | 前端 | Vue 3 + Vite + Pinia |
@@ -30,13 +30,11 @@ Law-RAG-Agent/
 │   │   └── chunker.py          # 智能切分 + 章级摘要
 │   ├── embedding/             # 向量化
 │   │   ├── embedder.py         # Ollama bge-m3 封装
-│   │   └── vector_store.py     # FAISS 索引管理
 │   ├── llm/                   # LLM 客户端
 │   │   └── client.py           # Ollama Qwen2.5:7b 封装 + 流式
 │   ├── rag/                   # RAG 引擎
 │   │   ├── engine.py           # 问答管线 + Prompt 构建
-│   │   ├── retriever.py        # 检索器抽象 (FAISS)
-│   │   ├── hybrid_retriever.py # 混合检索 (向量+BM25)
+│   │   ├── retriever.py        # 检索器抽象 (pgvector)
 │   │   ├── reranker.py         # Cross-Encoder 精排
 │   │   └── adjacent_expander.py# 相邻条文上下文扩展
 │   ├── agents/                # LangGraph Agent
@@ -54,9 +52,8 @@ Law-RAG-Agent/
 │   ├── src/stores/             # Pinia 状态管理
 │   └── src/api/                # API 封装
 ├── scripts/
-│   ├── build_index.py          # 构建 FAISS 索引
+│   ├── crawl.py                # 法律爬虫入口（直写 pgvector）
 │   ├── smoke_test.py           # 冒烟测试 (6 条路径)
-│   ├── fill_eval_dataset.py    # 测试集自动填充
 │   ├── eval_answer_quality.py  # 回答质量评测
 │   ├── batch_eval.py           # 检索批量评测
 │   └── generate_eval_dataset.py# 测试集生成
@@ -111,10 +108,15 @@ uv sync
 # 2) 准备环境变量（按需修改 JWT_SECRET 等）
 cp .env.example .env
 
-# 3) 首次运行必须构建 FAISS 向量索引
-uv run python scripts/build_index.py build
+# 3) 启动 PostgreSQL + pgvector（纯 PG 架构，无 FAISS）
+docker compose up -d db
 
-# 4) 启动 API 服务（默认 http://localhost:8000）
+# 4) 导入法律数据（两种方式任选）
+#    a) 知识库上传界面直接上传文档（按类型自动切分入库）
+#    b) 命令行爬虫直写 pgvector
+uv run python scripts/crawl.py --doc-type all --limit 50 --store pg
+
+# 5) 启动 API 服务（默认 http://localhost:8000）
 uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -228,13 +230,11 @@ curl -X POST http://localhost:8000/api/chat \
 | `RERANK_RECALL_K` | `15` | 粗排候选数 |
 | `RERANK_TOP_K` | `15` | 精排返回数 |
 | `ADJACENT_ENABLED` | `true` | 相邻条文扩展（放在 Reranker 之前丰富候选） |
-| `ADJACENT_WINDOW` | `3` | 扩展窗口 (±N) |
+| `ADJACENT_WINDOW` | `1` | 扩展窗口 (±N) |
 | `AGENT_ENABLED` | `false` | LangGraph Agent 开关（含查询改写+答案校验+重试）；开启会增加 rewrite/validate 两次 LLM 调用、延迟上升，追求最高质量时设 `true`（`.env.example` 已开启） |
 | `AGENT_MAX_RETRIES` | `1` | 答案校验失败时的最大重试次数 |
-| `INDEX_DIR` | `data/vector_store` | FAISS 索引路径 |
-| `INDEX_NAME` | `law_index` | 索引名称（`.env.example` 中使用 `law_index_bge`） |
 | `JWT_SECRET` | (必填) | JWT 签名密钥 |
-| `PG_ENABLED` | `false` | 使用 PostgreSQL + pgvector 替代 FAISS |
+| `PG_ENABLED` | `true` | 纯 PG 架构：必须为 true（v0.6 起无 FAISS 回退） |
 | `PG_CONN` | `postgresql://lawrag:lawrag123@localhost:5432/lawrag` | pgvector 连接串 |
 
 ---
@@ -244,8 +244,8 @@ curl -X POST http://localhost:8000/api/chat \
 ### RAG 检索流程
 
 ```
-用户查询 → FAISS 向量检索 (bge-m3) → chunk_type 过滤
-         → 相邻条文扩展 (window=±3)
+用户查询 → pgvector 向量检索 (bge-m3, halfvec+HNSW) → chunk_type 过滤
+         → 相邻条文扩展 (window=±1)
          → bge-reranker-v2-m3 精排 (Cross-Encoder, Top 15)
          → Prompt 拼接 → LLM 生成 → 答案
 ```
@@ -288,7 +288,7 @@ intent (意图识别)
 | Recall@5 | **73.00%** |
 | Recall@10 | 81.00% |
 | MRR | 0.6113 |
-| 最优配置 | 纯向量 (FAISS + bge-m3)，已移除章级摘要噪声 |
+| 最优配置 | 纯向量 (pgvector + bge-m3)，已移除章级摘要噪声 |
 
 详见: `docs/retrieval_eval.md`
 
@@ -356,8 +356,8 @@ uv run pytest tests/ --ignore=tests/test_api.py -v
 - **支持类型**：`law`(法律法规)、`regulation`(行政法规)、`judicial`(司法解释)、`local`(地方性法规)、`constitution`(宪法)、`supervision`(监察法规)、`all`(全部)；`case`(案例 / 裁判文书) 该数据源不提供
 - **增量策略**：每个子目录维护 `.crawl_manifest.json`，按文档 id 去重；`force=true` 可强制重爬
 - **落库方式**（`--store` / API 的 `store` 字段）：
-  - `txt`（默认）：落地到 `LawData/<子目录>/*.txt`，供 FAISS 索引
-  - `pg`：**直接写入 PostgreSQL + pgvector**（需 `PG_ENABLED=true` 且已 `docker compose up -d`），无需落盘即可被检索
+  - `pg`（默认）：**直接写入 PostgreSQL + pgvector**（需 `PG_ENABLED=true` 且已 `docker compose up -d`），无需落盘即可被检索
+  - `txt`：落地到 `LawData/<子目录>/*.txt`（原始文本存档）
   - `both`：两者都做
   - pg 模式下的增量按「标题」去重（已入库则跳过，`force=true` 会删除旧文档重建）
 
@@ -385,13 +385,9 @@ uv run python -c "from src.knowledge.crawler import NpcLawCrawler; \
 
 ### 爬取后重建索引
 
-爬取完成后会产出 `LawData/laws/*.txt` 等增量文件。需重建索引使其可被检索：
+使用 `store=pg`（默认）时，爬取的文档**直接写入 pgvector，无需重建索引**即可被检索。
 
-```bash
-uv run python scripts/build_index.py build
-```
-
-也可在 `/api/crawl` 请求体中设置 `"rebuild": true`，任务完成后由服务自动触发重建。
+`/api/crawl` 请求体中的 `"rebuild": true` 会在任务完成后由服务自动对 pgvector 做一次 HNSW 全量重建（增量插入已生效，一般无需开启）。
 
 ---
 

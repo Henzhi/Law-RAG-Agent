@@ -153,6 +153,7 @@ class IngestionPipeline:
             task["progress"] = 100
             # 注意：HNSW 索引支持增量插入，无需每文档 REINDEX（全量重建会锁表）。
             # 批量导入结束后如需整理索引，由调用方显式执行一次 store.reindex()。
+            self._rebuild_article_map(chunks)
             logger.info(f"解析完成: {file_name} → {len(chunks)} 块")
             return len(chunks)
 
@@ -161,6 +162,73 @@ class IngestionPipeline:
             task["error"] = str(e)
             logger.error(f"解析失败: {task['file_path']} — {e}")
             raise
+
+    def _rebuild_article_map(self, chunks: list[dict]) -> None:
+        """重建相邻条文映射 article_map.json（供 AdjacentExpander 使用）。
+
+        原由 scripts/build_index.py（FAISS 时代）生成；v0.6 纯 PG 后，
+        每次入库后从本批 chunks 的 metadata 增量更新：
+            {law_name: {article_number_int: {content, article_range, chapter, section}}}
+        """
+        try:
+            from src.rag.adjacent_expander import AdjacentExpander
+            from pathlib import Path
+            import json as _json
+
+            map_path = Path(__file__).resolve().parents[2] / "data" / "vector_store" / "article_map.json"
+
+            existing: dict = {}
+            if map_path.exists():
+                with open(map_path, encoding="utf-8") as f:
+                    existing = _json.load(f)
+
+            cn_to_int = {
+                '零': 0, '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
+                '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                '百': 100, '千': 1000,
+            }
+
+            def _cn2int(cn: str) -> int:
+                result = 0
+                unit = 1
+                i = len(cn) - 1
+                while i >= 0:
+                    val = cn_to_int.get(cn[i], 0)
+                    if val >= 10:
+                        unit = val
+                        if i == 0:
+                            result += unit
+                        i -= 1
+                        continue
+                    result += val * unit
+                    unit = 1
+                    i -= 1
+                return result
+
+            for c in chunks:
+                meta = c.get("metadata", {}) or {}
+                law_name = meta.get("law_name", "")
+                article_range = meta.get("article_range", "")
+                if not law_name or not article_range:
+                    continue
+                import re as _re
+                m = _re.search(r'第([一二三四五六七八九十百千零两]+)条', article_range)
+                if not m:
+                    continue
+                num = _cn2int(m.group(1))
+                existing.setdefault(law_name, {})[str(num)] = {
+                    "content": c.get("content", ""),
+                    "article_range": article_range,
+                    "chapter": meta.get("chapter", ""),
+                    "section": meta.get("section", ""),
+                }
+
+            map_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(map_path, "w", encoding="utf-8") as f:
+                _json.dump(existing, f, ensure_ascii=False, indent=2)
+            logger.info(f"article_map 已更新: {map_path} ({len(existing)} 部法律)")
+        except Exception as e:
+            logger.warning(f"article_map 更新失败（相邻扩展将不生效）: {e}")
 
     # ------------------------------------------------------------------
     # 内部方法

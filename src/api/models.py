@@ -38,7 +38,7 @@ class ChatResponse(BaseModel):
                     "chapter": s.chapter,
                     "article_range": s.article_range,
                     "citation": s.citation,
-                    "score": float(s.score),  # FAISS 返回 numpy.float32，需转 Python float
+                    "score": float(s.score),  # pgvector 返回 float，统一转 Python float
                     "content": getattr(s, "content", ""),  # 条文原文，供前端查看
                 }
                 for s in sources
@@ -93,10 +93,10 @@ class CrawlRequest(BaseModel):
     force: bool = Field(default=False, description="是否强制重爬已存在的文档")
     subdir: str = Field(default="", description="覆盖输出子目录名（默认按 doc_type 自动）")
     store: str = Field(
-        default="txt",
-        description="输出目标: txt(LawData/FAISS) / pg(pgvector) / both。可组合如 pg,txt",
+        default="pg",
+        description="输出目标: pg(pgvector，推荐) / txt(LawData 原始文本存档) / both。可组合如 pg,txt",
     )
-    rebuild: bool = Field(default=False, description="爬完后是否自动重建 FAISS 索引（store 不含 txt 时无效）")
+    rebuild: bool = Field(default=False, description="爬完后是否重建 pgvector 索引（HNSW 增量已生效，一般无需开启）")
 
 
 class CrawlTaskResponse(BaseModel):

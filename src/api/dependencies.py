@@ -2,9 +2,7 @@
 API 依赖注入。
 
 管理 LLM、向量库、RAG 引擎 / Agent 等单例，所有可配参数从 src.config 读取。
-支持 FAISS 和 pgvector 两种后端。
-
-v0.5: 引入多后端工厂函数 + 适配器，可通过 .env 切换 Ollama/OpenAI。
+v0.6: 纯 PG 架构，检索后端统一为 pgvector（已移除 FAISS）。
 """
 from __future__ import annotations
 
@@ -14,20 +12,17 @@ from src.config import (
     LLM_MODEL, LLM_TEMPERATURE, LLM_TOP_P, LLM_MAX_TOKENS,
     LLM_BACKEND, LLM_MAX_RETRIES,
     EMBED_MODEL, EMBED_BATCH_SIZE, EMBED_MAX_RETRIES,
-    RETRIEVAL_TOP_K, RETRIEVAL_HYBRID_ENABLED,
+    RETRIEVAL_TOP_K,
     RERANK_ENABLED, RERANK_MODEL, RERANK_RECALL_K, RERANK_TOP_K,
     AGENT_MAX_RETRIES,
-    PG_ENABLED, PG_CONN,
-    INDEX_NAME, INDEX_DIR,
+    PG_CONN,
     ADJACENT_ENABLED, ADJACENT_WINDOW,
 )
 from src.llm.adapter import LLMAdapter, EmbeddingAdapter
 from src.llm.factory import create_llm_backend
 from src.embedding.factory import create_embedding_backend
-from src.embedding.vector_store import VectorStore
 from src.rag.engine import RAGEngine
-from src.rag.retriever import FAISSRetriever, PgvectorRetriever, PgvectorStoreRetriever
-from src.rag.hybrid_retriever import HybridRetriever
+from src.rag.retriever import PgvectorStoreRetriever
 from src.agents.graph import LawAgentGraph
 
 logger = logging.getLogger(__name__)
@@ -75,62 +70,36 @@ def _create_embedder():
 
 
 def _create_retriever(embedder):
-    """根据配置创建检索器 (FAISS / pgvector v2)
+    """创建检索器（纯 pgvector：PgvectorStore + halfvec + HNSW）
 
-    当 PG_ENABLED=true 时使用新的 PgvectorStore + halfvec + HNSW，
-    否则回退到 FAISS。
+    v0.6 起强制 pgvector，不再支持 FAISS 回退。
+    PG 连接失败将直接抛错（不静默降级），保证部署配置正确性。
     """
     from pathlib import Path
 
-    store_dir = INDEX_DIR / INDEX_NAME
+    from src.knowledge.pgvector_store import PgvectorStore
+    logger.info("使用 pgvector 检索 (halfvec + HNSW)")
+    store = PgvectorStore(PG_CONN)
+    store.ensure_tables()
+    retriever = PgvectorStoreRetriever(
+        store=store,
+        embedder=embedder,
+        embedding_model=embedder.model,
+    )
 
-    if PG_ENABLED:
-        from src.knowledge.pgvector_store import PgvectorStore
-        logger.info("使用 pgvector v2 检索 (halfvec + HNSW)")
-        store = PgvectorStore(PG_CONN)
-        store.ensure_tables()
-        retriever = PgvectorStoreRetriever(
-            store=store,
-            embedder=embedder,
-            embedding_model=embedder.model,
-        )
-        return _wrap_adjacent(retriever, store_dir)
-
-    # FAISS 模式
-    logger.info(f"加载 FAISS: {store_dir}")
-    store = VectorStore(embedder=embedder, persist_dir=INDEX_DIR, index_name=INDEX_NAME)
-    if store.load() is None:
-        raise RuntimeError(f"索引不存在: {store_dir}\n请先运行: uv run python scripts/build_index.py build")
-
-    retriever = FAISSRetriever(store)
-
-    # 混合检索
-    corpus_path = Path(store.store_dir) / "bm25_corpus.pkl"
-    if RETRIEVAL_HYBRID_ENABLED and corpus_path.exists():
-        faiss = FAISSRetriever(store)
-        retriever = HybridRetriever.from_corpus_file(vector_retriever=faiss, corpus_path=corpus_path)
-        logger.info("混合检索就绪")
-
-    # 相邻扩展
-    retriever = _wrap_adjacent(retriever, store_dir)
-
-    # Reranker 兜底精排
+    # Reranker 精排（若启用）
     if RERANK_ENABLED:
         from src.rag.reranker import Reranker, RerankRetriever
         reranker = Reranker(model_name=RERANK_MODEL)
         retriever = RerankRetriever(base_retriever=retriever, reranker=reranker, recall_k=RERANK_RECALL_K, top_k=RERANK_TOP_K)
         logger.info(f"Reranker 就绪: 粗排{RERANK_RECALL_K} → 精排{RERANK_TOP_K}")
 
-    return retriever
-
-
-def _wrap_adjacent(retriever, store_dir):
-    """如果启用，包裹相邻扩展检索器（最外层）"""
+    # 相邻扩展（最外层；article_map 缺失时自动降级为空转）
     if ADJACENT_ENABLED:
-        from pathlib import Path
         from src.rag.adjacent_expander import AdjacentExpander
-        map_path = Path(store_dir) / "article_map.json"
+        map_path = Path(__file__).resolve().parents[2] / "data" / "vector_store" / "article_map.json"
         retriever = AdjacentExpander(base_retriever=retriever, article_map_path=map_path, window=ADJACENT_WINDOW)
+
     return retriever
 
 
@@ -146,9 +115,7 @@ def get_engine() -> RAGEngine:
 
 
 def _create_memory_manager(llm, embedder):
-    """创建对话记忆管理器（需要 pgvector 环境）"""
-    if not PG_ENABLED:
-        return None
+    """创建对话记忆管理器（纯 PG，需要 pgvector 环境）"""
     try:
         from src.memory.conversation import ConversationMemoryManager
         return ConversationMemoryManager(conn_string=PG_CONN, embedder=embedder, llm=llm)
@@ -158,9 +125,7 @@ def _create_memory_manager(llm, embedder):
 
 
 def _create_faq_cache(embedder):
-    """创建 FAQ 语义缓存管理器（需要 pgvector 环境）"""
-    if not PG_ENABLED:
-        return None
+    """创建 FAQ 语义缓存管理器（纯 PG，需要 pgvector 环境）"""
     try:
         from src.memory.faq_cache import FAQCache
         return FAQCache(conn_string=PG_CONN, embedder=embedder)

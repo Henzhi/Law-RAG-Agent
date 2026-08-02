@@ -32,8 +32,8 @@ def main() -> None:
     ap.add_argument("--force", action="store_true", help="强制重爬已存在的文档")
     ap.add_argument("--subdir", default="", help="覆盖输出子目录名（默认按 doc_type 自动）")
     ap.add_argument(
-        "--store", default="txt",
-        help="输出目标: txt(LawData/FAISS) / pg(pgvector) / both；可组合如 pg,txt",
+        "--store", default="pg",
+        help="输出目标: pg(pgvector，推荐) / txt(LawData 原始文本存档) / both；可组合如 pg,txt",
     )
     ap.add_argument("--sleep", type=float, default=1.0, help="请求间隔秒数（默认 1.0，限流用）")
     ap.add_argument("--quiet", action="store_true", help="仅输出统计结果")
@@ -61,10 +61,10 @@ def main() -> None:
                 print(f"  - {e}")
         print(f"新增/更新文件数: {len(res.files)}")
         if res.added or res.updated:
-            if "pg" in (args.store or "txt").lower():
-                print("已写入 pgvector（无需重建 FAISS）。可直接检索。")
+            if "pg" in (args.store or "pg").lower():
+                print("已写入 pgvector，可直接检索。")
             else:
-                print("提示: 爬取后请运行  uv run python scripts/build_index.py build  重建索引")
+                print("提示: 仅 txt 存档未入库，请使用 store=pg 或 both 写入 pgvector")
     else:
         print(f"added={res.added} updated={res.updated} skipped={res.skipped} "
               f"failed={res.failed} total={res.total}")

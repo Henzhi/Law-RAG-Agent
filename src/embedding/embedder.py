@@ -7,7 +7,7 @@ Embeddings 接口，避免 langchain-ollama 的版本冲突问题。
 特性：
   - 自动批处理，避免逐条调用
   - 本地运行，零网络依赖
-  - 实现 langchain_core.embeddings.Embeddings 接口，可直接用于 FAISS
+  - 实现 langchain_core.embeddings.Embeddings 接口，可直接用于向量库
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class LawEmbedder(Embeddings):
     """法律文档向量化器
 
     直接通过 ollama SDK 调用 Ollama 服务，实现 LangChain Embeddings 接口，
-    使其可直接用于 LangChain FAISS 向量库。
+    使其可直接用于 LangChain 兼容的向量库（pgvector 等）。
     """
 
     def __init__(

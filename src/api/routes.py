@@ -94,13 +94,13 @@ async def health():
         from src.config import LLM_MODEL
         eng = get_engine() if not AGENT_ENABLED else get_agent()
 
-        # 遍历检索器链找到最内层的 FAISS/PG retriever
+        # 遍历检索器链找到最内层的 pgvector retriever
         doc_count = 0
         index_ready = True
         retriever = getattr(eng, "retriever", None)
         if retriever:
             index_ready = retriever.is_ready()
-            # 穿透装饰器链: AdjacentExpander → Reranker → Hybrid → FAISS
+            # 穿透装饰器链: AdjacentExpander → Reranker → PgvectorStoreRetriever
             chain = retriever
             while hasattr(chain, "_base"):
                 chain = chain._base
@@ -607,7 +607,7 @@ def _run_crawl(task_id: str, req: CrawlRequest) -> None:
         }
         state["finished"] = True
         state["status"] = "done"
-        if req.rebuild and "pg" not in (req.store or "txt").lower():
+        if req.rebuild:
             _trigger_rebuild(task_id)
     except Exception as e:
         state["status"] = "error"
@@ -617,20 +617,24 @@ def _run_crawl(task_id: str, req: CrawlRequest) -> None:
 
 
 def _trigger_rebuild(task_id: str) -> None:
-    import subprocess
+    """纯 PG 语义：重建 pgvector 的 HNSW 索引。
 
+    v0.6 移除 FAISS 后，`rebuild` 不再触发 scripts/build_index.py，
+    改为对 pgvector 做一次全量 reindex（可选、低频操作）。
+    """
     state = _crawl_tasks.get(task_id)
     if state is None:
         return
-    PROJECT_ROOT = Path(__file__).resolve().parents[2]
-    script = PROJECT_ROOT / "scripts" / "build_index.py"
     state["rebuild"] = "running"
     try:
-        subprocess.run([sys.executable, str(script), "build"], cwd=str(PROJECT_ROOT), check=True)
+        from src.config import PG_CONN
+        from src.knowledge.pgvector_store import PgvectorStore
+        store = PgvectorStore(PG_CONN)
+        store.reindex()
         state["rebuild"] = "done"
     except Exception as e:
         state["rebuild"] = f"error: {e}"
-        logger.error(f"[crawl] 重建索引失败: {e}")
+        logger.error(f"[crawl] 重建 pgvector 索引失败: {e}")
 
 
 @router.get("/crawl/status/{task_id}", response_model=CrawlStatusResponse)

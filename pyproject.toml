@@ -19,9 +19,7 @@ dependencies = [
     "langchain~=1.3.0",          # 1.3.11 — 最新稳定版，Tool/Retriever/记忆抽象
     "langgraph~=1.2.0",          # 1.2.8  — StateGraph 有状态多 Agent 编排
     # ---- 向量检索（支撑需求：F-04、NF-1）----
-    "faiss-cpu~=1.9.0",          # 1.9.0.post1 — IndexFlatIP + 归一化内积
-    "langchain-community>=0.3.0",  # FAISS 向量库封装
-    "rank-bm25>=0.2.0",           # BM25 关键词检索（混合检索用）
+    # v0.6 纯 PG 架构：检索统一走 pgvector（halfvec + HNSW），已移除 FAISS/BM25
     # ---- Embedding（支撑需求：F-03、NF-3）----
     # 直接调用 Ollama API（避免 langchain-ollama 版本冲突）
     # 使用 ollama Python SDK 调用 nomic-embed-text
@@ -32,7 +30,6 @@ dependencies = [
     "selenium~=4.27.0",          # 4.27.1 — 动态页面兜底
     # ---- 本地 LLM 客户端（支撑需求：C-2、C-3、NF-2）----
     "ollama~=0.4.0",             # 0.4.9 — 对接本地 Ollama 服务
-    "jieba>=0.42.1",
     "torch>=2.5",
     "sentence-transformers>=3.0",
     "pgvector>=0.5.0",

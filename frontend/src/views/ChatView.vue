@@ -18,7 +18,7 @@
           <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
           <h1>Law-RAG-Agent</h1>
           <span class="badge">Qwen2.5:7B</span>
-          <span class="badge">FAISS</span>
+          <span class="badge">pgvector</span>
           <router-link to="/knowledge" class="nav-link">知识库</router-link>
           <label class="switch" :class="{ on: rewriteEnabled }" title="开启后，发送的提问会先被改写为规范法律检索表述并请您确认；关闭则保持原句、绝对精确">
             <input type="checkbox" v-model="rewriteEnabled" />

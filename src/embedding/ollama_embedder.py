@@ -2,7 +2,7 @@
 Ollama Embedding 后端实现。
 
 通过 ollama Python SDK 调用本地 Ollama 服务的 Embedding API。
-实现 LangChain Embeddings 兼容接口，可直接用于 FAISS / LangChain。
+实现 LangChain Embeddings 兼容接口，可直接用于 LangChain 兼容的向量库。
 """
 from __future__ import annotations
 
@@ -82,7 +82,7 @@ class OllamaEmbedder(EmbeddingBackend):
 class OllamaLangChainEmbedder(Embeddings):
     """将 OllamaEmbedder 包装为 LangChain Embeddings 接口
 
-    使 Ollama Embedding 后端可以无缝用于 LangChain FAISS 向量库。
+    使 Ollama Embedding 后端可以无缝用于 LangChain 兼容的向量库。
     """
 
     def __init__(self, backend: OllamaEmbedder):
