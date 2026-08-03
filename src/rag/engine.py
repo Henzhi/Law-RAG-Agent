@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Iterator
 
 from src.llm.client import LawLLM, Message as LLMMessage
+from src.memory.token_budget import TokenBudget
 from .retriever import BaseRetriever, RetrievedDoc
 from .intent import is_casual_query, needs_retrieval
 
@@ -228,6 +229,13 @@ class RAGEngine:
                     parts.append(f"### {idx}. {doc.article_range}\n{content}")
 
         context = "\n\n".join(parts) if parts else "（未找到相关条文）"
+
+        # TokenBudget 预算截断：按模型真实窗口动态分配检索段预算，超限截断
+        window = getattr(self.llm, "get_context_window", lambda: 28000)()
+        budget = TokenBudget(context_window=window)
+        budget.adjust_for_complexity(query)
+        budget.consume("retrieval_docs", context)
+        context = budget._segments.get("retrieval_docs", context)
 
         return self.prompt_template.format(context=context, query=query)
 

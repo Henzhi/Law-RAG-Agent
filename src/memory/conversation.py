@@ -61,7 +61,16 @@ SUMMARY_TRIGGER_ROUNDS = 6
 
 # 检索参数
 DEFAULT_TOP_K = 3
-TIME_DECAY_DAYS = 7  # 7 天内的记忆权重不变，之后线性衰减
+TIME_DECAY_DAYS = 7  # 半衰期：记忆权重每 7 天衰减一半（指数衰减 e^{-λt}, λ = ln2/7）
+
+# importance 预筛（写入链路规则预筛，避免低价值对话产生噪音记忆）：
+# 简单规则分档，后续可用离线任务做更细粒度的冲突检测与合并。
+IMPORTANCE_LOW_MSGS = 6      # ≥6 轮（触发线）：基础重要度
+IMPORTANCE_MID_MSGS = 10     # ≥10 轮：中
+IMPORTANCE_HIGH_MSGS = 15    # ≥15 轮：高
+
+# 记忆 TTL（天）：与 init.sql 默认值保持一致
+MEMORY_TTL_DAYS = 30
 
 
 class ConversationMemoryManager:
@@ -82,6 +91,34 @@ class ConversationMemoryManager:
         self._conn_string = conn_string
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
+        # schema 迁移状态（importance 列 + 幂等唯一索引），连接重建后需重跑
+        self._schema_ready = False
+
+    def _ensure_schema(self):
+        """幂等 schema 迁移：旧库补 importance 列 + (user_id, session_id) 唯一索引。
+
+        唯一索引是 save_memory 幂等写入（UPSERT）的前提；
+        importance 列用于检索时的重要度加权。表不存在时忽略（init.sql 会建表）。
+        """
+        if self._schema_ready:
+            return
+        self._ensure_connection()
+        try:
+            with self._conn.cursor() as cur:
+                cur.execute(
+                    "ALTER TABLE conversation_memories "
+                    "ADD COLUMN IF NOT EXISTS importance REAL DEFAULT 0.6"
+                )
+                cur.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_user_session "
+                    "ON conversation_memories(user_id, session_id)"
+                )
+            self._conn.commit()
+            self._schema_ready = True
+        except Exception as e:
+            logger.warning(f"记忆表 schema 迁移失败（表未创建？）: {e}")
+            self._conn.rollback()
+            self._schema_ready = False
 
     def _ensure_connection(self):
         """检查连接是否存活，断开则自动重连"""
@@ -111,18 +148,36 @@ class ConversationMemoryManager:
         """判断是否需要生成摘要（>6 轮时触发）"""
         return message_count >= SUMMARY_TRIGGER_ROUNDS
 
+    @staticmethod
+    def _estimate_importance(message_count: int) -> float:
+        """根据对话轮数估算重要度（写入链路的规则预筛）
+
+        轮数越多说明对话越深入、信息价值越高；简单分档避免每轮
+        都跑 LLM 打分（噪音大 + 成本高），后续可离线做冲突检测/合并。
+
+        Returns:
+            0.6 / 0.8 / 1.0 三档
+        """
+        if message_count >= IMPORTANCE_HIGH_MSGS:
+            return 1.0
+        if message_count >= IMPORTANCE_MID_MSGS:
+            return 0.8
+        return 0.6
+
+    @_locked
     def save_memory(
         self,
         user_id: str,
         session_id: str,
         messages: list[dict],
     ) -> str | None:
-        """保存对话记忆
+        """保存对话记忆（幂等 + 重要度预筛）
 
-        1. 检查是否达到触发条件
-        2. LLM 生成结构化摘要
-        3. 提取关键实体
-        4. embedding → 写入 pgvector
+        1. 检查是否达到触发条件（≥6 轮）
+        2. 幂等检查：同会话已存摘要且轮数未增长则跳过（避免重复写入噪音）
+        3. LLM 生成结构化摘要
+        4. 提取关键实体 + 按轮数分档重要度
+        5. embedding → UPSERT 写入 pgvector（ON CONFLICT 覆盖巩固）
 
         Args:
             user_id: 用户 ID
@@ -130,9 +185,27 @@ class ConversationMemoryManager:
             messages: 完整对话消息 [{"role": ..., "content": ...}, ...]
 
         Returns:
-            摘要文本（用于日志），如果未触发则返回 None
+            摘要文本（用于日志），未触发/已存在则返回 None
         """
         if len(messages) < SUMMARY_TRIGGER_ROUNDS:
+            return None
+
+        self._ensure_schema()
+
+        # 幂等检查：同会话已存摘要且轮数不少于本次 → 跳过。
+        # 前端可能多次整体保存同一会话，不幂等会反复插摘要导致记忆污染。
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT message_count FROM conversation_memories "
+                "WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )
+            row = cur.fetchone()
+        if row is not None and row[0] is not None and row[0] >= len(messages):
+            logger.debug(
+                f"记忆已存在且对话未增长，跳过写入: session={session_id[:8]}... "
+                f"(stored={row[0]}, now={len(messages)})"
+            )
             return None
 
         # 拼对话文本
@@ -142,19 +215,27 @@ class ConversationMemoryManager:
         formatted_prompt = _SUMMARY_PROMPT.format(conversation=conv_text)
         summary = self._llm.chat("请按照系统提示的格式生成摘要。", system_prompt=formatted_prompt)
 
-        # 解析实体
+        # 解析实体 + 重要度预筛
         entities = self._parse_entities(summary)
+        importance = self._estimate_importance(len(messages))
 
         # 向量化
         summary_vec = self._embedder.embed_query(summary)
 
-        # 写入 pgvector
+        # UPSERT 写入 pgvector（幂等：同 (user_id, session_id) 覆盖并刷新 TTL）
         self._ensure_connection()
         with self._conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO conversation_memories "
-                "(user_id, session_id, summary, summary_embed, entities, message_count) "
-                "VALUES (%s, %s, %s, %s::halfvec, %s, %s)",
+                "(user_id, session_id, summary, summary_embed, entities, message_count, importance) "
+                "VALUES (%s, %s, %s, %s::halfvec, %s, %s, %s) "
+                "ON CONFLICT (user_id, session_id) "
+                "DO UPDATE SET summary = EXCLUDED.summary, "
+                "  summary_embed = EXCLUDED.summary_embed, "
+                "  entities = EXCLUDED.entities, "
+                "  message_count = EXCLUDED.message_count, "
+                "  importance = EXCLUDED.importance, "
+                "  expires_at = NOW() + INTERVAL '%s days'",
                 (
                     user_id,
                     session_id,
@@ -162,10 +243,15 @@ class ConversationMemoryManager:
                     summary_vec,
                     entities,
                     len(messages),
+                    importance,
+                    MEMORY_TTL_DAYS,
                 ),
             )
         self._conn.commit()
-        logger.info(f"对话记忆已保存: user={user_id[:8]}..., session={session_id[:8]}..., msg_count={len(messages)}")
+        logger.info(
+            f"对话记忆已保存: user={user_id[:8]}..., session={session_id[:8]}..., "
+            f"msg_count={len(messages)}, importance={importance}"
+        )
         return summary
 
     # ------------------------------------------------------------------
@@ -182,18 +268,22 @@ class ConversationMemoryManager:
         """检索与当前问题最相关的历史对话摘要
 
         1. embedding 查询
-        2. pgvector 余弦相似度检索（仅查该用户的记忆）
-        3. 时间衰减排序
+        2. pgvector 余弦相似度检索（仅查该用户的记忆 — 多租户硬隔离）
+        3. 排序打分：score = relevance × importance_norm × decay(t)
+           - relevance: 向量相似度
+           - importance: 写入时按轮数分档的重要度（归一化到 [0.5, 1.0]）
+           - decay: 指数时间衰减 e^{-λt}（半衰期 7 天）
 
         Returns:
-            [{"summary", "entities", "score", "message_count", "created_at"}, ...]
+            [{"summary", "entities", "score", "importance", "message_count", "created_at"}, ...]
         """
         query_vec = self._embedder.embed_query(query)
 
         self._ensure_connection()
+        self._ensure_schema()
         with self._conn.cursor() as cur:
             cur.execute(
-                "SELECT summary, entities, message_count, created_at, "
+                "SELECT summary, entities, message_count, created_at, importance, "
                 "1 - (summary_embed <=> %s::halfvec) AS score "
                 "FROM conversation_memories "
                 "WHERE user_id = %s "
@@ -208,21 +298,31 @@ class ConversationMemoryManager:
             return []
 
         import datetime
+        import math
+
         now = datetime.datetime.now(datetime.timezone.utc)
+        # 指数衰减：半衰期 7 天，λ = ln2 / 7
+        decay_lambda = math.log(2) / max(TIME_DECAY_DAYS, 1)
         results = []
         for row in rows:
-            summary, entities, msg_count, created_at, score = row
-            # 时间衰减
+            summary, entities, msg_count, created_at, importance, score = row
+
+            # 1. 时间衰减（指数形式，遗忘曲线更平滑）
             if created_at:
-                age_days = (now - created_at).days
-                if age_days > TIME_DECAY_DAYS:
-                    decay = TIME_DECAY_DAYS / age_days
-                    score = score * decay
+                age_days = max((now - created_at).days, 0)
+                decay = math.exp(-decay_lambda * age_days)
+                score = score * decay
+
+            # 2. importance 加权（归一化到 [0.5, 1.0]，避免过低重要度完全压掉相关度）
+            imp = float(importance) if importance is not None else self._estimate_importance(msg_count or 0)
+            imp_norm = 0.5 + 0.5 * imp
+            score = score * imp_norm
 
             results.append({
                 "summary": summary,
                 "entities": entities or {},
                 "score": round(float(score), 4),
+                "importance": round(float(imp), 4),
                 "message_count": msg_count,
                 "created_at": created_at.isoformat() if created_at else None,
             })

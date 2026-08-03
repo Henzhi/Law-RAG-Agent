@@ -20,11 +20,10 @@ from typing import Iterator
 from langgraph.graph import StateGraph, END
 
 from src.agents.state import AgentState
-from src.agents.nodes import make_nodes, build_hierarchical_context, _msg_role, _msg_content
+from src.agents.nodes import make_nodes, build_hierarchical_context, build_budgeted_prompt
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
 from src.rag.intent import classify_intent, classify_query_type
-from src.llm.client import Message as LLMMessage
 from src.memory.hallucination_guard import HallucinationGuard
 
 logger = logging.getLogger(__name__)
@@ -234,16 +233,18 @@ class LawAgentGraph:
             fb = state.get("validation_feedback", "")
             memory_ctx = state.get("memory_context", "")
             ctx = build_hierarchical_context(docs)
-            if memory_ctx:
-                ctx = memory_ctx + "\n\n" + ctx
             extra = f"\n\n## ⚠️ 上次回答不合格\n原因: {fb}\n请确保本次回答: 引用法律名称、标注条款号、不编造内容。" if fb else ""
-            prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query) + extra
 
-            hist = []
-            for m in state.get("messages", [])[-6:]:
-                r = _msg_role(m); c = _msg_content(m)[:300]
-                if r in ("human", "ai", "user", "assistant"):
-                    hist.append(LLMMessage("user" if r == "human" else "assistant" if r == "ai" else r, c))
+            # TokenBudget 预算化组装：动态窗口 + 分段截断 + 历史预算筛选
+            prompt, hist = build_budgeted_prompt(
+                llm=self.llm,
+                template=RAG_PROMPT_TEMPLATE,
+                context=ctx,
+                query=query,
+                memory_context=memory_ctx,
+                messages=state.get("messages", []),
+                extra=extra,
+            )
 
             answer_raw = ""
             try:
@@ -286,6 +287,3 @@ class LawAgentGraph:
             yield {"type": "thinking", "content": f"❌ 未通过{f': {fb}' if fb else ''}，重新生成..."}
 
         yield {"type": "thinking", "content": "✅ 全部完成"}
-
-
-# _msg_role / _msg_content 统一从 nodes 模块导入（单一来源，见文件顶部 import）

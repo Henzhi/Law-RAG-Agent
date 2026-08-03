@@ -31,6 +31,7 @@
 | 07-24 | 4b | 步骤4审查 — 多维度质量检测: sources反序列化 + ask()缓存一致性 + hit_count精确更新 + 245测试 ✅ |
 | 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
+| 08-03 | 9 | 记忆+上下文窗口升级 — save_memory幂等接线(会话保存异步固化) + importance预筛 + 指数时间衰减 + TokenBudget接入Agent/RAG动态窗口 + 12测试 (361 total) ✅ |
 
 ---
 
@@ -1353,7 +1354,7 @@ src/agents/
 
 | # | 发现 | 模块 | 说明 |
 |---|------|------|------|
-| 7 | **TokenBudget 未集成** — 完整的 Token 预算管理器已实现，但未接入 `nodes.py:generate` 的 prompt 构建 | `token_budget.py` | 步骤 8 集成 |
+| 7 | **TokenBudget 未集成** — 完整的 Token 预算管理器已实现，但未接入 `nodes.py:generate` 的 prompt 构建 | `token_budget.py` | ✅ 已集成（步骤 9：接入 `nodes.py`/`graph.py`/`engine.py`，动态使用模型真实窗口） |
 | 8 | **QueryLogger 未集成** — 链路追踪模块完整，但 `graph.py`/`routes.py` 均未使用 | `query_log.py` | 步骤 8 集成 |
 | 9 | **`structlog>=26.1.0` 死依赖** — 已声明但无代码引用 | `pyproject.toml` | 步骤 8 预埋 |
 | 10 | **`QueryLogger._save()` 每次新建连接** — `psycopg2.connect()` 每次写入创建/关闭，高并发下连接风暴 | `query_log.py:103` | 步骤 8 加连接池 |

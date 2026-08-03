@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _engine: RAGEngine | None = None
 _agent: LawAgentGraph | None = None
 _llm: object | None = None  # LLMAdapter，兼容旧 LawLLM 接口
+_memory_mgr: object | None = None  # ConversationMemoryManager | None
 
 
 def get_llm():
@@ -152,6 +153,19 @@ def _create_faq_cache(embedder):
         return None
 
 
+def get_memory_manager():
+    """获取对话记忆管理器单例（会话保存时异步固化记忆用）。
+
+    与 get_agent 内创建的记忆管理器复用同一实例，避免重复连接 PG。
+    """
+    global _memory_mgr
+    if _memory_mgr is None:
+        llm = get_llm()
+        embedder = _create_embedder()
+        _memory_mgr = _create_memory_manager(llm, embedder)
+    return _memory_mgr
+
+
 def get_agent(force_reload: bool = False) -> LawAgentGraph:
     """获取 LangGraph 多 Agent 引擎（含记忆管理器 + FAQ 缓存）"""
     global _agent
@@ -161,7 +175,7 @@ def get_agent(force_reload: bool = False) -> LawAgentGraph:
         llm = get_llm()
         embedder = _create_embedder()
         retriever = _create_retriever(embedder)
-        memory_mgr = _create_memory_manager(llm, embedder)
+        memory_mgr = get_memory_manager()
         faq_cache = _create_faq_cache(embedder)
         _agent = LawAgentGraph(
             retriever=retriever, llm=llm,

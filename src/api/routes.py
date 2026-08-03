@@ -15,7 +15,7 @@ from typing import Callable, Iterator
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.background import BackgroundTask
 
 from .dependencies import get_engine, get_agent, get_llm, _create_embedder
@@ -531,9 +531,34 @@ _SAVE_MAX_MESSAGES = 500
 _SAVE_MAX_BYTES = 2 * 1024 * 1024  # 2MB
 
 
+def _persist_memory_background(user_id: str, session_id: str, messages: list[dict]) -> None:
+    """后台异步固化对话记忆（Best-Effort，失败不影响主流程）。
+
+    触发条件由 ConversationMemoryManager 内部判断（≥6 轮 + 幂等检查），
+    这里只负责把完整会话交给记忆管理器。匿名用户跳过，
+    避免把不同访客的对话混入同一份记忆。
+    """
+    try:
+        from .dependencies import get_memory_manager
+        from .auth import ANONYMOUS_USER_ID
+        if not user_id or user_id == ANONYMOUS_USER_ID:
+            return
+        mgr = get_memory_manager()
+        if mgr is None:
+            logger.warning("记忆管理器未就绪，跳过记忆固化")
+            return
+        mgr.save_memory(user_id, session_id, messages)
+    except Exception as e:
+        logger.warning(f"后台记忆固化失败（可忽略）: {type(e).__name__}: {e}")
+
+
 @router.post("/conversations/{session_id}")
 def save_session(session_id: str, body: dict, user_id: str = Depends(get_current_user)):
-    """保存整个会话的 JSON 消息数组（每次整体覆盖，不逐条插入）"""
+    """保存整个会话的 JSON 消息数组（每次整体覆盖，不逐条插入）
+
+    保存完成后若消息数达到记忆触发阈值，后台异步生成摘要固化长期记忆
+    （幂等 UPSERT，同一会话重复保存不会产生重复记忆）。
+    """
     from .conversation_store import get_conversation_store
     store = get_conversation_store()
     messages = body.get("messages", [])
@@ -545,6 +570,13 @@ def save_session(session_id: str, body: dict, user_id: str = Depends(get_current
     if payload_size > _SAVE_MAX_BYTES:
         raise HTTPException(400, f"会话体积过大: {payload_size / 1024 / 1024:.1f}MB（限制 2MB）")
     store.save_session(user_id=user_id, session_id=session_id, messages=messages)
+
+    # 异步触发记忆固化（≥6 轮才写，内部幂等）
+    from src.memory.conversation import SUMMARY_TRIGGER_ROUNDS
+    if len(messages) >= SUMMARY_TRIGGER_ROUNDS:
+        resp = JSONResponse({"ok": True})
+        resp.background = BackgroundTask(_persist_memory_background, user_id, session_id, messages)
+        return resp
     return {"ok": True}
 
 

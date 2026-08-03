@@ -152,6 +152,24 @@ class TokenBudget:
         ]
         return "\n\n".join(p for p in parts if p)
 
+    def get_limit(self, name: str) -> int:
+        """获取某段的预算上限 (tokens)"""
+        alloc = self._allocation.get(name)
+        return alloc["tokens"] if alloc else 0
+
+    def build_template(self, template: str, query: str) -> str:
+        """用预算截断后的各段填充现有模板
+
+        Args:
+            template: 含 {context} / {query} 占位符的提示词模板
+            query: 用户问题
+
+        Returns:
+            组装后的 prompt 文本
+        """
+        ctx = self._segments.get("retrieval_docs", "")
+        return template.format(context=ctx, query=query)
+
     def used_ratio(self) -> float:
         total = sum(self._used.values())
         return total / self.total

@@ -13,8 +13,14 @@ from src.agents.prompts import VALIDATOR_PROMPT
 from src.rag.intent import classify_intent, classify_query_type
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
 from src.llm.client import Message as LLMMessage
+from src.memory.token_budget import TokenBudget
 
 logger = logging.getLogger(__name__)
+
+# 单条历史消息截断长度（与旧行为一致）
+_HISTORY_MSG_MAX_CHARS = 300
+# 送入 LLM 的历史最大轮数（预算内再按 token 收紧）
+_HISTORY_MAX_TURNS = 6
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +42,88 @@ def _msg_content(m) -> str:
     if isinstance(m, dict):
         return str(m.get("content", ""))
     return str(m)
+
+
+# ---------------------------------------------------------------------------
+# 预算化上下文构建（TokenBudget）
+# ---------------------------------------------------------------------------
+
+def _fit_history(messages: list, limit_tokens: int) -> list[LLMMessage]:
+    """按 token 预算从后往前挑选对话历史（上下文缩减策略的滑动窗口）。
+
+    相比旧的"固定最近 6 轮×300 字符"，这里在轮数上限内进一步按
+    chat_history 段预算收紧：消息越短能带越多轮，长消息自动少带。
+    """
+    msgs = list(messages or [])
+    if len(msgs) > _HISTORY_MAX_TURNS * 2:
+        msgs = msgs[-_HISTORY_MAX_TURNS * 2:]
+
+    selected = []
+    total = 0
+    for m in reversed(msgs):
+        role = _msg_role(m)
+        if role not in ("human", "ai", "user", "assistant"):
+            continue
+        content = _msg_content(m)[:_HISTORY_MSG_MAX_CHARS]
+        tokens = TokenBudget.count(content) + 4  # 角色/分隔开销
+        if selected and total + tokens > limit_tokens:
+            break
+        total += tokens
+        selected.append((role, content))
+
+    result = []
+    for role, content in reversed(selected):
+        r = "user" if role == "human" else "assistant" if role == "ai" else role
+        result.append(LLMMessage(r, content))
+    return result
+
+
+def build_budgeted_prompt(
+    llm,
+    template: str,
+    context: str,
+    query: str,
+    memory_context: str = "",
+    messages: list | None = None,
+    extra: str = "",
+) -> tuple[str, list[LLMMessage]]:
+    """用 TokenBudget 按模型实际上下文窗口动态分配各段预算并组装 Prompt。
+
+    设计（对齐"上下文缩减"策略）：
+      - 窗口大小取模型真实窗口（llm.get_context_window()），不再写死 28K
+      - 各段（system/记忆+条文/历史）按预算 consume，超限截断
+      - 查询复杂度动态调整分配（对比查询放大检索预算等）
+
+    Args:
+        llm: LLM 实例（含 get_context_window()）
+        template: 含 {context}/{query} 占位符的 RAG 模板
+        context: 检索条文上下文（build_hierarchical_context 结果）
+        query: 用户问题
+        memory_context: 历史对话记忆上下文（注入在条文之前）
+        messages: 当前会话对话历史
+        extra: 追加提醒（如重试质量反馈），计入 system 段预算
+
+    Returns:
+        (prompt, history) — history 为预算内筛选的 LLMMessage 列表
+    """
+    window = getattr(llm, "get_context_window", lambda: 28000)()
+    budget = TokenBudget(context_window=window)
+    budget.adjust_for_complexity(query)
+
+    # system 段 = 模板头部说明 + 重试提醒（计入预算，超限截断）
+    head = template.split("{context}")[0]
+    budget.consume("system_prompt", head + extra)
+
+    # 记忆上下文拼在条文之前，整体计入 retrieval 预算
+    if memory_context:
+        context = memory_context + "\n\n" + context
+    budget.consume("retrieval_docs", context)
+
+    # 历史按 chat_history 预算筛选
+    history = _fit_history(messages or [], budget.get_limit("chat_history"))
+
+    prompt = budget.build_template(template, query)
+    return prompt, history
 
 
 # ---------------------------------------------------------------------------
@@ -161,25 +249,21 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
 
         ctx = build_hierarchical_context(docs)
 
-        # 记忆上下文放在法条前面
-        if memory_context:
-            ctx = memory_context + "\n\n" + ctx
-
-        # 重试时追加质量提醒
+        # 重试时追加质量提醒（计入 system 段预算）
         extra = ""
         if feedback:
             extra = f"\n\n## ⚠️ 上次回答不合格\n原因: {feedback}\n请确保本次回答: 引用法律名称、标注条款号、不编造内容。"
 
-        prompt = RAG_PROMPT_TEMPLATE.format(context=ctx, query=query) + extra
-
-        # 附加当前会话历史
-        history = []
-        for m in state.get("messages", [])[-6:]:
-            role = _msg_role(m)
-            content = _msg_content(m)[:300]
-            if role in ("human", "ai", "user", "assistant"):
-                role = "user" if role == "human" else "assistant" if role == "ai" else role
-                history.append(LLMMessage(role, content))
+        # TokenBudget 预算化组装：动态窗口 + 分段截断 + 历史预算筛选
+        prompt, history = build_budgeted_prompt(
+            llm=llm,
+            template=RAG_PROMPT_TEMPLATE,
+            context=ctx,
+            query=query,
+            memory_context=memory_context,
+            messages=state.get("messages", []),
+            extra=extra,
+        )
 
         answer = llm.chat(prompt, history=history if history else None)
         return {"answer": answer}

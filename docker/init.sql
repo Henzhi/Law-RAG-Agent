@@ -201,12 +201,16 @@ CREATE TABLE IF NOT EXISTS conversation_memories (
     summary_embed   HALFVEC(1024),                               -- 摘要向量（用于语义检索历史对话）
     entities        JSONB,                                       -- 关键实体: {case_type, laws_involved, key_facts, ...}
     message_count   INT DEFAULT 0,                               -- 原始对话轮数
+    importance      REAL DEFAULT 0.6,                            -- 重要度（按轮数分档预筛，检索时加权）
     created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
     expires_at      TIMESTAMPTZ DEFAULT (now() + INTERVAL '30 days')  -- 30 天后自动清除
 );
 
 -- 按用户快速查找所有历史记忆
 CREATE INDEX IF NOT EXISTS idx_memory_user ON conversation_memories(user_id);
+
+-- 幂等唯一约束：同会话只保留一份记忆（save_memory 用 UPSERT 巩固更新）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_user_session ON conversation_memories(user_id, session_id);
 
 -- HNSW 索引：新问题时语义检索最相关的历史对话摘要
 CREATE INDEX IF NOT EXISTS idx_memory_embedding
@@ -221,6 +225,7 @@ COMMENT ON COLUMN conversation_memories.summary IS 'LLM 生成的对话摘要（
 COMMENT ON COLUMN conversation_memories.summary_embed IS '摘要向量（用于语义检索历史对话）';
 COMMENT ON COLUMN conversation_memories.entities IS '关键实体 JSONB: {case_type, laws_involved, key_facts}';
 COMMENT ON COLUMN conversation_memories.message_count IS '原始对话轮数';
+COMMENT ON COLUMN conversation_memories.importance IS '重要度（按轮数分档: 6/10/15 轮对应 0.6/0.8/1.0），检索时参与加权';
 COMMENT ON COLUMN conversation_memories.created_at IS '创建时间';
 COMMENT ON COLUMN conversation_memories.expires_at IS '过期时间（30天后自动清除）';
 

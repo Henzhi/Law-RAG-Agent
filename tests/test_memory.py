@@ -123,3 +123,96 @@ class TestGraphMemoryIntegration:
         from src.agents.graph import AgentState
         assert "memory_context" in AgentState.__annotations__
         assert "user_id" in AgentState.__annotations__
+
+
+class TestImportanceEstimation:
+    """记忆重要度预筛（按轮数分档）"""
+
+    def test_importance_levels(self):
+        from src.memory.conversation import ConversationMemoryManager
+        assert ConversationMemoryManager._estimate_importance(6) == 0.6
+        assert ConversationMemoryManager._estimate_importance(9) == 0.6
+        assert ConversationMemoryManager._estimate_importance(10) == 0.8
+        assert ConversationMemoryManager._estimate_importance(14) == 0.8
+        assert ConversationMemoryManager._estimate_importance(15) == 1.0
+        assert ConversationMemoryManager._estimate_importance(100) == 1.0
+
+    def test_importance_below_trigger_returns_base(self):
+        from src.memory.conversation import ConversationMemoryManager
+        assert ConversationMemoryManager._estimate_importance(0) == 0.6
+
+
+class TestHistoryBudgetFitting:
+    """TokenBudget 预算化的历史筛选"""
+
+    def _msgs(self, n):
+        return [{"role": "user" if i % 2 == 0 else "assistant", "content": f"消息内容{i}"} for i in range(n)]
+
+    def test_fit_within_budget_keeps_all(self):
+        from src.agents.nodes import _fit_history
+        msgs = self._msgs(4)
+        result = _fit_history(msgs, limit_tokens=10000)
+        assert len(result) == 4
+
+    def test_fit_limited_by_budget(self):
+        from src.agents.nodes import _fit_history
+        # 20 条长消息 + 极小预算 → 只能带下最后 1-2 条
+        msgs = [{"role": "user", "content": "这是一条很长的法律咨询消息内容。" * 20} for _ in range(20)]
+        result = _fit_history(msgs, limit_tokens=50)
+        assert 1 <= len(result) <= 3
+
+    def test_fit_orders_newest_last(self):
+        from src.agents.nodes import _fit_history
+        msgs = [{"role": "user", "content": f"Q{i}"} for i in range(3)]
+        result = _fit_history(msgs, limit_tokens=10000)
+        # 历史按时间顺序: 最早在前, 最近在后
+        assert result[-1].content == "Q2"
+
+
+class TestBudgetedPrompt:
+    """TokenBudget 接入生成路径：动态窗口 + 分段预算"""
+
+    class FakeLLM:
+        def __init__(self, window=28000):
+            self._window = window
+
+        def get_context_window(self):
+            return self._window
+
+        def chat(self, prompt, history=None):
+            return "ok"
+
+    def test_uses_model_window(self):
+        from src.agents.nodes import build_budgeted_prompt
+        llm = self.FakeLLM(window=64000)
+        prompt, history = build_budgeted_prompt(
+            llm=llm, template="{context}\n\n## 用户问题\n{query}",
+            context="条文", query="工伤怎么认定",
+            memory_context="历史记忆", messages=[],
+        )
+        # 窗口 64K → 默认检索预算翻倍到 16000，长 context 不被截断
+        assert "条文" in prompt
+        assert "历史记忆" in prompt
+
+    def test_truncates_oversized_context(self):
+        from src.agents.nodes import build_budgeted_prompt
+        llm = self.FakeLLM(window=28000)
+        big = "法条内容" * 5000  # 远超 8000 token 预算
+        prompt, history = build_budgeted_prompt(
+            llm=llm, template="{context}\n## 用户问题\n{query}",
+            context=big, query="问题", memory_context="", messages=[],
+        )
+        from src.memory.token_budget import TokenBudget
+        assert TokenBudget.count(prompt) <= 28000 - 2000 + 500  # 不超窗口
+
+    def test_memory_before_context(self):
+        from src.agents.nodes import build_budgeted_prompt
+        llm = self.FakeLLM(window=28000)
+        prompt, _ = build_budgeted_prompt(
+            llm=llm, template="{context}\n## 用户问题\n{query}",
+            context="条文内容", query="问题",
+            memory_context="## 历史对话参考\n旧记忆",
+            messages=[],
+        )
+        # 记忆上下文应拼在条文之前
+        assert prompt.index("历史对话参考") < prompt.index("条文内容")
