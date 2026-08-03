@@ -32,6 +32,8 @@ body {
   --color-error: #DC2626;
   --color-error-light: #FEF2F2;
   --color-success: #059669;
+  --color-danger: #EF4444;
+  --color-danger-hover: #DC2626;
   --color-sidebar-bg: #F9FAFB;
   --color-sidebar-hover: #F3F4F6;
   --radius: 10px;
@@ -58,6 +60,8 @@ body {
   --color-error: #F87171;
   --color-error-light: rgba(248, 113, 113, 0.12);
   --color-success: #34D399;
+  --color-danger: #F87171;
+  --color-danger-hover: #EF4444;
   --color-sidebar-bg: #1F2026;
   --color-sidebar-hover: #2A2C33;
   --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3);

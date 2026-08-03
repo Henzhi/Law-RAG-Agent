@@ -1,14 +1,16 @@
 """
 Ollama LLM 后端实现。
 
-通过 ollama Python SDK 调用本地 Ollama 服务，支持同步和流式调用，
-内置自动重试机制。
+通过 ollama Python SDK 调用本地 Ollama 服务，支持同步和流式调用。
 
-兼容 LangChain BaseChatModel 接口，可无缝集成到 LangGraph Agent。
+重试策略（src.llm.retry）:
+  - 仅重试可重试异常（429 / 5xx / 网络 / 超时），4xx 业务错误直接抛出
+  - 指数退避 + 全抖动 + 尊重 Retry-After 头
+  - 流式请求已产出内容后失败不再重试（避免重复 token），
+    并在 finally 中尽力关闭底层流以尽快释放连接
 """
 from __future__ import annotations
 
-import time
 import logging
 from typing import Any, Iterator
 
@@ -25,6 +27,7 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from src.llm.base import LLMBackend
+from src.llm.retry import is_retryable, wait_and_log
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +91,7 @@ class OllamaBackend(LLMBackend):
     # ------------------------------------------------------------------
 
     def _generate_impl(self, messages: list[dict[str, str]]) -> str:
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 response = self._client.chat(
@@ -105,19 +108,20 @@ class OllamaBackend(LLMBackend):
                 return response["message"]["content"]
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"Ollama 调用失败 (尝试 {attempt}/{self.max_retries}): {e}"
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay * attempt)
+                if not is_retryable(e):
+                    logger.warning(f"Ollama 调用失败（不可重试）: {e}")
+                    raise
+                wait_and_log(e, attempt, self.max_retries, logger_name=__name__)
 
         raise RuntimeError(
             f"Ollama 调用失败，已重试 {self.max_retries} 次: {last_error}"
         )
 
     def _stream_impl(self, messages: list[dict[str, str]]) -> Iterator[str]:
-        last_error = None
+        last_error: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
+            stream = None
+            yielded_any = False
             try:
                 stream = self._client.chat(
                     model=self.model,
@@ -134,15 +138,37 @@ class OllamaBackend(LLMBackend):
                 for chunk in stream:
                     content = chunk.get("message", {}).get("content", "")
                     if content:
+                        yielded_any = True
                         yield content
                 return
+            except GeneratorExit:
+                # 调用方中断：释放底层连接后继续抛出，由生成器框架处理
+                raise
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"Ollama 流式调用失败 (尝试 {attempt}/{self.max_retries}): {e}"
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay * attempt)
+                if yielded_any:
+                    logger.warning(
+                        f"Ollama 流式中途失败（已输出内容，不重试）: {e}"
+                    )
+                    raise
+                if not is_retryable(e):
+                    logger.warning(f"Ollama 流式调用失败（不可重试）: {e}")
+                    raise
+                wait_and_log(e, attempt, self.max_retries, logger_name=__name__)
+            finally:
+                if stream is not None:
+                    try:
+                        # ollama SDK 迭代器没有 close()，但可通过 close 底层响应释放连接
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
+                        resp = getattr(stream, "_response", None) or getattr(stream, "response", None)
+                        if resp is not None:
+                            rc = getattr(resp, "close", None)
+                            if callable(rc):
+                                rc()
+                    except Exception:
+                        pass
 
         raise RuntimeError(
             f"Ollama 流式调用失败，已重试 {self.max_retries} 次: {last_error}"

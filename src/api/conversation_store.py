@@ -3,11 +3,30 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from functools import wraps
 
 import psycopg2
 from src.config import PG_CONN
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    """串行化对共享 PG 连接的访问（psycopg2 连接非线程安全）。
+
+    会话读写由 FastAPI sync 端点在线程池执行，多请求并发必须保护共享连接。
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            # 防御：兼容绕过 __init__ 的构造方式（如测试 mock）
+            lock = threading.Lock()
+            self._lock = lock
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class ConversationStore:
@@ -89,6 +108,7 @@ class ConversationStore:
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_user_session ON conversations(user_id, session_id)")
         self._conn.commit()
 
+    @_locked
     def save_session(self, user_id: str, session_id: str, messages: list[dict]):
         """保存/更新整个会话的 JSON 消息数组"""
         self._ensure_connection()
@@ -146,6 +166,7 @@ class ConversationStore:
             })
         return result
 
+    @_locked
     def delete_session(self, user_id: str, session_id: str):
         self._ensure_connection()
         with self._conn.cursor() as cur:

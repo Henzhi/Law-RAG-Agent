@@ -6,9 +6,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import sys
+import queue as _queue
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable, Iterator
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
@@ -17,7 +20,7 @@ from fastapi.responses import StreamingResponse
 from .dependencies import get_engine, get_agent, get_llm, _create_embedder
 from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse, RewriteRequest
 from .auth import get_current_user, require_registered_user, register_user, login_user
-from src.config import AGENT_ENABLED
+from src.config import AGENT_ENABLED, LLM_MAX_CONCURRENCY
 from src.rag.engine import needs_retrieval
 from src.rag.intent import sanitize_input
 from src.llm.client import Message
@@ -196,6 +199,158 @@ async def _is_disconnected(request: Request) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# 流式桥接：同步生成器 → 异步生成器
+#
+# LLM / 检索 / Agent 全是同步代码。若直接在 async 生成器里迭代，会阻塞整个
+# 事件循环（一个慢请求拖垮所有请求），且无法在模型生成中途响应客户端断开，
+# 导致用户取消后后端仍持续消耗 Token。
+#
+# 方案：
+#   1. 同步生成器放到独立线程池中迭代，事件循环只负责收事件、检查断开、编码 SSE。
+#   2. 检测到客户端断开时，从主协程 close() 底层同步生成器 → 触发 GeneratorExit
+#      → LLM 后端的 finally 立即关闭 HTTP 连接，停止 Token 消耗。
+# ---------------------------------------------------------------------------
+_STREAM_EXECUTOR = ThreadPoolExecutor(
+    max_workers=max(8, LLM_MAX_CONCURRENCY * 2),
+    thread_name_prefix="sse-stream",
+)
+# 并发流上限：防止过多请求同时打向供应商触发 429 / 本地显存溢出。
+_STREAM_SEMAPHORE = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
+
+_SENTINEL_END = ("__stream_end__", None)
+
+
+async def _bridge_sync_stream(gen_factory: Callable[[], Iterator[dict]], request: Request):
+    """在后台线程迭代同步生成器，主协程逐步产出事件。
+
+    - 不阻塞事件循环
+    - 客户端断开 → 关闭底层生成器，立即停止 LLM 消耗
+    """
+    q: _queue.Queue = _queue.Queue(maxsize=64)
+    stop = threading.Event()
+    loop = asyncio.get_running_loop()
+    gen_ref: dict = {"gen": None}
+    finished_normally = False
+
+    def _run() -> None:
+        gen = None
+        try:
+            gen = gen_factory()
+            gen_ref["gen"] = gen
+            for item in gen:
+                if stop.is_set():
+                    break
+                try:
+                    q.put(item, timeout=1.0)
+                except _queue.Full:
+                    break  # 消费者已停止，防御性退出
+        except GeneratorExit:
+            pass
+        except Exception as e:
+            try:
+                q.put(("__stream_error__", e), timeout=1.0)
+            except _queue.Full:
+                pass
+        finally:
+            if gen is not None:
+                try:
+                    gen.close()
+                except Exception:
+                    pass
+            try:
+                q.put(_SENTINEL_END, timeout=1.0)
+            except _queue.Full:
+                pass
+
+    worker = loop.run_in_executor(_STREAM_EXECUTOR, _run)
+
+    try:
+        while True:
+            # 从后台线程取事件（至多阻塞 1s，便于轮询断开状态）
+            try:
+                item = await asyncio.to_thread(q.get, True, 1.0)
+            except _queue.Empty:
+                if await _is_disconnected(request):
+                    stop.set()
+                    break
+                continue
+
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "__stream_end__":
+                finished_normally = True
+                break
+            if isinstance(item, tuple) and len(item) == 2 and item[0] == "__stream_error__":
+                finished_normally = True  # 线程已结束并清理
+                raise item[1]
+
+            # 产出前检查断开
+            if await _is_disconnected(request):
+                stop.set()
+                break
+            yield item
+    finally:
+        # 无论何种退出原因（客户端断开 / 上层 GeneratorExit / 异常），
+        # 只要后台生成器未自然结束，就强制关闭它，立即中断 LLM 调用、
+        # 停止 Token 消耗。
+        if not finished_normally:
+            stop.set()
+            gen = gen_ref.get("gen")
+            if gen is not None:
+                try:
+                    # 跨线程 close：CPython 允许，GeneratorExit 在生成器线程抛出，
+                    # 底层 LLM 流 finally 关闭 HTTP 连接
+                    await asyncio.to_thread(gen.close)
+                except Exception:
+                    pass
+        try:
+            await asyncio.wait_for(worker, timeout=5.0)
+        except Exception:
+            pass  # 线程仍在清理时忽略，worker 最终会被线程池回收
+
+
+def _iter_engine_stream(engine, query: str, history: list) -> Iterator[dict]:
+    """非 Agent 路径：RAG 问答同步生成器（含意图识别 / 检索 / 流式生成）。
+
+    由 _bridge_sync_stream 放到后台线程执行。
+    """
+    yield {"type": "thinking", "content": "正在分析问题..."}
+    casual = not needs_retrieval(query, engine.llm)
+    yield {"type": "thinking", "content": f"意图识别: {'闲聊 → 直接回复' if casual else '法律问题 → 检索法条'}"}
+
+    if casual:
+        yield {"type": "meta", "sources": [], "is_casual": True}
+        yield {"type": "thinking", "content": "直接回复，无需检索"}
+        for token in engine.llm.chat_stream(query, history=history):
+            yield {"type": "token", "content": token}
+        yield {"type": "thinking", "content": "完成"}
+        return
+
+    t_ret = time.perf_counter()
+    yield {"type": "thinking", "content": "正在检索法律条文..."}
+    docs = engine.retriever.search(query, top_k=engine.top_k)
+    ret_ms = (time.perf_counter() - t_ret) * 1000
+    prompt = engine._build_prompt(query, docs)
+    top_score = round(docs[0].score, 4) if docs else 0
+    perf_logger.info(
+        f"[stream] mode=rag retrieved={len(docs)} top_score={top_score} ret_ms={ret_ms:.0f}ms"
+    )
+    yield {"type": "thinking", "content": f"检索完成，找到 {len(docs)} 条相关条文"}
+    if docs:
+        citations = [f"{d.law_name} {d.article_range}" for d in docs[:5]]
+        yield {"type": "thinking", "content": f"引用: {', '.join(citations)}"}
+
+    sources = [
+        {"law_name": s.law_name, "chapter": s.chapter,
+         "article_range": s.article_range, "citation": s.citation,
+         "score": float(s.score), "content": s.content}
+        for s in docs
+    ]
+    yield {"type": "meta", "sources": sources, "is_casual": False}
+    yield {"type": "thinking", "content": "模型正在生成回答..."}
+    for token in engine.llm.chat_stream(prompt, history=history):
+        yield {"type": "token", "content": token}
+
+
 @router.post("/chat/stream")
 async def chat_stream(req: ChatRequest, request: Request):
     t_start = time.perf_counter()
@@ -214,88 +369,27 @@ async def chat_stream(req: ChatRequest, request: Request):
 
     if AGENT_ENABLED:
         agent = get_agent()
-
         safe_history = _sanitize_history(req.history)
-
-        async def generate():
-            try:
-                for event in agent.stream(safe_query, history=safe_history):
-                    if await _is_disconnected(request):
-                        perf_logger.info(f"[stream] mode=agent 客户端断开，终止生成 elapsed={time.perf_counter()-t_start:.0f}s")
-                        return
-                    yield _sse(event)
-            except Exception as e:
-                elapsed = (time.perf_counter() - t_start) * 1000
-                perf_logger.error(f"[stream] mode=agent error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
-                yield _sse({"type": "error", "content": "处理失败，请稍后重试"})
-            elapsed = (time.perf_counter() - t_start) * 1000
-            perf_logger.info(f"[stream] mode=agent query_len={len(req.query)} elapsed={elapsed:.0f}ms")
-            yield "data: [DONE]\n\n"
-        return StreamingResponse(
-            generate(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-
-    # ---- 非 Agent 路径：统一用一个 generate() 发出 thinking 事件 ----
-    engine = get_engine()
-    history = _dicts_to_messages(_sanitize_history(req.history))
+        gen_factory: Callable[[], Iterator[dict]] = lambda: agent.stream(safe_query, history=safe_history)
+        mode = "agent"
+    else:
+        engine = get_engine()
+        history = _dicts_to_messages(_sanitize_history(req.history))
+        gen_factory = lambda: _iter_engine_stream(engine, safe_query, history)
+        mode = "rag"
 
     async def generate():
         try:
-            yield _sse({"type": "thinking", "content": "正在分析问题..."})
-            if await _is_disconnected(request):
-                return
-            casual = not needs_retrieval(req.query, engine.llm)
-            yield _sse({"type": "thinking", "content": f"意图识别: {'闲聊 → 直接回复' if casual else '法律问题 → 检索法条'}"})
-
-            if casual:
-                yield _sse({"type": "meta", "sources": [], "is_casual": True})
-                yield _sse({"type": "thinking", "content": "直接回复，无需检索"})
-                for token in engine.llm.chat_stream(req.query, history=history):
-                    if await _is_disconnected(request):
-                        perf_logger.info("[stream] 客户端断开，终止闲聊生成")
-                        return
-                    yield _sse({"type": "token", "content": token})
-                yield _sse({"type": "thinking", "content": "完成"})
-                return
-
-            t_ret = time.perf_counter()
-            yield _sse({"type": "thinking", "content": "正在检索法律条文..."})
-            docs = engine.retriever.search(req.query, top_k=engine.top_k)
-            ret_ms = (time.perf_counter() - t_ret) * 1000
-            prompt = engine._build_prompt(req.query, docs)
-            top_score = round(docs[0].score, 4) if docs else 0
-            perf_logger.info(
-                f"[stream] mode=rag retrieved={len(docs)} top_score={top_score} ret_ms={ret_ms:.0f}ms"
-            )
-            yield _sse({"type": "thinking", "content": f"检索完成，找到 {len(docs)} 条相关条文"})
-            if docs:
-                citations = [f"{d.law_name} {d.article_range}" for d in docs[:5]]
-                yield _sse({"type": "thinking", "content": f"引用: {', '.join(citations)}"})
-
-            sources = [
-                {"law_name": s.law_name, "chapter": s.chapter,
-                 "article_range": s.article_range, "citation": s.citation,
-                 "score": float(s.score), "content": s.content}
-                for s in docs
-            ]
-            yield _sse({"type": "meta", "sources": sources, "is_casual": False})
-            yield _sse({"type": "thinking", "content": "模型正在生成回答..."})
-            for token in engine.llm.chat_stream(prompt, history=history):
-                if await _is_disconnected(request):
-                    perf_logger.info("[stream] 客户端断开，终止 RAG 生成")
-                    return
-                yield _sse({"type": "token", "content": token})
-
+            # 并发上限：排队等待，避免打爆供应商 / 显存
+            async with _STREAM_SEMAPHORE:
+                async for event in _bridge_sync_stream(gen_factory, request):
+                    yield _sse(event)
         except Exception as e:
             elapsed = (time.perf_counter() - t_start) * 1000
-            perf_logger.error(f"[stream] error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
+            perf_logger.error(f"[stream] mode={mode} error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
             yield _sse({"type": "error", "content": "处理失败，请稍后重试"})
-
         elapsed = (time.perf_counter() - t_start) * 1000
-        perf_logger.info(f"[stream] query_len={len(req.query)} elapsed={elapsed:.0f}ms")
-        yield _sse({"type": "thinking", "content": "全部完成"})
+        perf_logger.info(f"[stream] mode={mode} query_len={len(req.query)} elapsed={elapsed:.0f}ms")
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(

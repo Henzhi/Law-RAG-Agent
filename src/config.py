@@ -79,6 +79,14 @@ OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "deepseek-chat")
 OPENAI_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
 
+# ---------------------------------------------------------------------------
+# 流式 / 并发
+# ---------------------------------------------------------------------------
+
+# 并发 LLM 流上限：防止过多请求同时打向供应商导致 429 / 本地显存溢出。
+# 超过上限的流式请求排队等待，前端会先看到"排队中"状态。
+LLM_MAX_CONCURRENCY = _safe_int("LLM_MAX_CONCURRENCY", 8)
+
 
 # ---------------------------------------------------------------------------
 # Embedding

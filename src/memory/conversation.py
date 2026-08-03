@@ -15,12 +15,32 @@
 from __future__ import annotations
 
 import logging
+import threading
+from functools import wraps
 from typing import List
 
 import psycopg2
 from pgvector.psycopg2 import register_vector
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    """串行化对共享 PG 连接的访问（psycopg2 连接非线程安全）。
+
+    流式桥接改造后，记忆检索可能在多个请求的线程池 worker 中并发执行，
+    必须保护共享连接。
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            # 防御：兼容绕过 __init__ 的构造方式（如测试 mock）
+            lock = threading.Lock()
+            self._lock = lock
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 # 摘要生成 Prompt
 _SUMMARY_PROMPT = """请将以下法律咨询对话总结为一段结构化摘要，用于后续记忆检索。
@@ -78,6 +98,7 @@ class ConversationMemoryManager:
             register_vector(self._conn)
             logger.info("记忆管理器: PG 重连成功")
 
+    @_locked
     def close(self):
         """关闭数据库连接"""
         self._conn.close()
@@ -151,6 +172,7 @@ class ConversationMemoryManager:
     # 记忆检索
     # ------------------------------------------------------------------
 
+    @_locked
     def retrieve(
         self,
         user_id: str,

@@ -12,12 +12,13 @@ Ollama LLM 客户端。
 """
 from __future__ import annotations
 
-import time
 import logging
 from typing import Any, Iterator
 
 import ollama
 from langchain_core.callbacks import CallbackManagerForLLMRun
+
+from src.llm.retry import is_retryable, wait_and_log
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -285,7 +286,10 @@ class LawLLM(BaseChatModel):
 3. 保持回答简洁，不要凭空编造"""
 
     def _call_ollama(self, messages: list[dict[str, str]]) -> str:
-        """调用 Ollama chat API（带重试）"""
+        """调用 Ollama chat API（带重试）
+
+        重试策略见 src.llm.retry：仅重试 429/5xx/网络/超时，指数退避+抖动。
+        """
         last_error = None
         for attempt in range(1, self._max_retries + 1):
             try:
@@ -297,11 +301,10 @@ class LawLLM(BaseChatModel):
                 return response["message"]["content"]
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"Ollama 调用失败 (尝试 {attempt}/{self._max_retries}): {e}"
-                )
-                if attempt < self._max_retries:
-                    time.sleep(self._retry_delay * attempt)
+                if not is_retryable(e):
+                    logger.warning(f"Ollama 调用失败（不可重试）: {e}")
+                    raise
+                wait_and_log(e, attempt, self._max_retries, logger_name=__name__)
 
         raise RuntimeError(
             f"Ollama 调用失败，已重试 {self._max_retries} 次: {last_error}"
@@ -310,9 +313,14 @@ class LawLLM(BaseChatModel):
     def _call_ollama_stream(
         self, messages: list[dict[str, str]]
     ) -> Iterator[str]:
-        """流式调用 Ollama chat API（带重试）"""
+        """流式调用 Ollama chat API（带重试）
+
+        已产出内容后失败不重试（避免重复 token），并关闭底层流尽快释放连接。
+        """
         last_error = None
         for attempt in range(1, self._max_retries + 1):
+            stream = None
+            yielded_any = False
             try:
                 stream = self._client.chat(
                     model=self.model_name,
@@ -323,15 +331,30 @@ class LawLLM(BaseChatModel):
                 for chunk in stream:
                     content = chunk.get("message", {}).get("content", "")
                     if content:
+                        yielded_any = True
                         yield content
                 return
+            except GeneratorExit:
+                raise
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f"Ollama 流式调用失败 (尝试 {attempt}/{self._max_retries}): {e}"
-                )
-                if attempt < self._max_retries:
-                    time.sleep(self._retry_delay * attempt)
+                if yielded_any:
+                    logger.warning(
+                        f"Ollama 流式中途失败（已输出内容，不重试）: {e}"
+                    )
+                    raise
+                if not is_retryable(e):
+                    logger.warning(f"Ollama 流式调用失败（不可重试）: {e}")
+                    raise
+                wait_and_log(e, attempt, self._max_retries, logger_name=__name__)
+            finally:
+                if stream is not None:
+                    try:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
+                    except Exception:
+                        pass
 
         raise RuntimeError(
             f"Ollama 流式调用失败，已重试 {self._max_retries} 次: {last_error}"

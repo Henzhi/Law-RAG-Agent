@@ -8,10 +8,11 @@ Embedding 后端抽象基类。
 """
 from __future__ import annotations
 
-import time
 import logging
 from abc import ABC, abstractmethod
 from typing import List
+
+from src.llm.retry import is_retryable, wait_and_log
 
 logger = logging.getLogger(__name__)
 
@@ -115,18 +116,21 @@ class EmbeddingBackend(ABC):
     # ------------------------------------------------------------------
 
     def _embed_batch_with_retry(self, texts: List[str]) -> List[List[float]]:
-        """带重试的批量向量化"""
+        """带重试的批量向量化
+
+        仅重试 429/5xx/网络/超时（指数退避+抖动+Retry-After），
+        4xx 业务错误直接抛出，避免无谓重试放大限流。
+        """
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 return self._embed_batch_impl(texts)
             except Exception as e:
                 last_error = e
-                logger.warning(
-                    f'Embedding 调用失败 (尝试 {attempt}/{self.max_retries}): {e}'
-                )
-                if attempt < self.max_retries:
-                    time.sleep(self.retry_delay * attempt)
+                if not is_retryable(e):
+                    logger.warning(f'Embedding 调用失败（不可重试）: {e}')
+                    raise
+                wait_and_log(e, attempt, self.max_retries, logger_name=__name__)
 
         raise RuntimeError(
             f'Embedding 调用失败，已重试 {self.max_retries} 次: {last_error}'

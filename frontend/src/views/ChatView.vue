@@ -116,7 +116,7 @@
             <span class="switch-text">智能改写{{ rewriteEnabled ? ' · 开' : ' · 关' }}</span>
           </label>
         </div>
-        <ChatInput :disabled="chat.sending" @send="handleSend" />
+        <ChatInput :disabled="chat.sending" @send="handleSend" @stop="stopGeneration" />
       </div>
     </div>
   </div>
@@ -141,6 +141,8 @@ const sessions = ref([])
 const thinkingTraces = ref([])
 const thinkingOpen = ref(true)
 const answered = ref(false)
+// 当前生成请求的取消控制器：点击"停止"时 abort，后端会收到断开并停止消耗 Token
+const abortController = ref(null)
 
 // 示例问题（空状态展示，点击直接提问）
 const suggestions = [
@@ -211,6 +213,7 @@ async function handleSend(query) {
   answered.value = false
   thinkingTraces.value = []
   thinkingOpen.value = true
+  abortController.value = new AbortController()
 
   const recent = chat.messages.slice(-20)  // 不含当前提问
   chat.messages.push({ role: 'user', content: query })
@@ -222,6 +225,11 @@ async function handleSend(query) {
   } else {
     await runStream(query, recent)
   }
+}
+
+// 用户点击"停止"：中止 fetch，浏览器断开连接，后端检测到断开后停止生成
+function stopGeneration() {
+  abortController.value?.abort()
 }
 
 // 智能改写流程：开启开关后，每次发送都先调用 /api/rewrite，弹出确认卡等待用户确认。
@@ -257,10 +265,11 @@ async function useOriginal() {
 }
 
 async function runStream(query, recent) {
+  const ctrl = abortController.value
   try {
     let answer = ''
     let sources = []
-    for await (const msg of streamChat(query, recent, chat.sessionId)) {
+    for await (const msg of streamChat(query, recent, chat.sessionId, { signal: ctrl?.signal })) {
       if (msg.type === 'thinking') {
         thinkingTraces.value.push(msg.content)
       } else if (msg.type === 'clear') {
@@ -295,13 +304,23 @@ async function runStream(query, recent) {
       await refreshSessions()
     }
   } catch (e) {
-    chat.messages.push({ role: 'assistant', content: `请求失败: ${e.message}` })
+    // 用户主动取消：保留已生成的部分，不当作错误提示
+    const cancelled = e?.name === 'AbortError' || ctrl?.signal?.aborted
+    const hasContent = chat.messages.some(m => m.role === 'assistant' && m.content)
+    if (cancelled && !hasContent) {
+      chat.messages.push({ role: 'assistant', content: '已停止生成。' })
+    } else if (!cancelled) {
+      chat.messages.push({ role: 'assistant', content: `请求失败: ${e.message}` })
+    }
   }
   chat.sending = false
+  abortController.value = null
 }
 
 async function handleNewChat() {
+  abortController.value?.abort()  // 中断未完成的生成，避免后端继续消耗
   chat.newSession()
+  chat.sending = false
   chat.messages = []
   thinkingTraces.value = []
   answered.value = false
@@ -309,8 +328,10 @@ async function handleNewChat() {
 }
 
 async function handleSelect(sessionId) {
+  abortController.value?.abort()  // 中断未完成的生成
   chat.sessionId = sessionId
   localStorage.setItem('lawrag_session', sessionId)
+  chat.sending = false
   chat.messages = []
   thinkingTraces.value = []
   answered.value = false

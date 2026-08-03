@@ -69,11 +69,12 @@ export const getDocumentChunks = (docId, limit = 50, offset = 0) =>
   fetch(`${BASE}/knowledge/documents/${docId}/chunks?limit=${limit}&offset=${offset}`, { headers: authHeaders() }).then(handleError)
 
 // Chat Stream
-export async function* streamChat(query, history, sessionId) {
+export async function* streamChat(query, history, sessionId, { signal } = {}) {
   const resp = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify({ query, history, session_id: sessionId }),
+    signal,
   })
   if (!resp.ok) throw new Error(`请求失败: ${resp.status}`)
 
@@ -85,16 +86,27 @@ export async function* streamChat(query, history, sessionId) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() || ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      const data = line.slice(6)
-      if (data === '[DONE]') return
-      try {
-        const msg = JSON.parse(data)
-        yield msg
-      } catch { /* skip malformed */ }
+
+    // 按 SSE 事件边界（\n\n）切分：半条事件留在 buffer 中与下一数据包拼接，
+    // 避免 TCP 分包把一条 data: 事件截断导致 JSON.parse 失败。
+    let sep
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      const raw = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      for (const line of raw.split('\n')) {
+        if (!line.startsWith('data: ')) continue
+        const data = line.slice(6)
+        if (data === '[DONE]') return
+        try {
+          const msg = JSON.parse(data)
+          yield msg
+        } catch (e) {
+          // 单个事件 JSON 损坏（供应商截断 / 网关错误）：不再静默丢弃，
+          // 明确报错让上层提示用户，避免"内容凭空丢失"。
+          console.warn('[stream] malformed SSE event:', data)
+          throw new Error('服务端返回了不完整的数据，请重试')
+        }
+      }
     }
   }
 }

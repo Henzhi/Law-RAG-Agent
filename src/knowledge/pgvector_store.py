@@ -17,9 +17,30 @@ PostgreSQL + pgvector 知识库存储层 (v0.5)
 from __future__ import annotations
 
 import logging
+import threading
+from functools import wraps
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    """串行化对共享 PG 连接的访问。
+
+    psycopg2 连接非线程安全。流式桥接改造后，多个请求可能并发调用本
+    store（各占一个线程池 worker），必须用锁保护同一连接，否则会出现
+    cursor 冲突 / 连接被并发使用等错误。
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            # 防御：兼容绕过 __init__ 的构造方式（如测试 mock）
+            lock = threading.Lock()
+            self._lock = lock
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 
 class PgvectorStore:
@@ -37,6 +58,7 @@ class PgvectorStore:
         from pgvector.psycopg2 import register_vector
 
         self._conn_string = conn_string
+        self._lock = threading.Lock()
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
 
@@ -59,6 +81,7 @@ class PgvectorStore:
             self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
 
+    @_locked
     def close(self):
         self._conn.close()
 
@@ -66,6 +89,7 @@ class PgvectorStore:
     # 表初始化
     # ------------------------------------------------------------------
 
+    @_locked
     def ensure_tables(self):
         """创建知识库相关表（幂等，已有表不重建）"""
         self._ensure_connection()
@@ -82,6 +106,7 @@ class PgvectorStore:
     # 文档管理
     # ------------------------------------------------------------------
 
+    @_locked
     def ensure_document(
         self,
         doc_type: str,
@@ -294,6 +319,7 @@ class PgvectorStore:
             logger.info(f"已删除文档: id={doc_id[:8]}... (含所有块)")
         return deleted > 0
 
+    @_locked
     def get_document_chunks(
         self, doc_id: str, limit: int | None = None, offset: int = 0
     ) -> list[dict]:
@@ -368,6 +394,7 @@ class PgvectorStore:
     # 向量检索
     # ------------------------------------------------------------------
 
+    @_locked
     def search(
         self,
         query_vec: List[float],
@@ -466,6 +493,24 @@ class PgvectorStore:
     # 索引管理
     # ------------------------------------------------------------------
 
+    @_locked
+    def fetch_all_active_chunks(self) -> list[tuple[str, dict]]:
+        """返回全部 active 文档块 (content, metadata)。
+
+        供 BM25 索引构建使用。必须通过本方法（已加锁）读取，
+        避免外部直接访问共享连接造成线程竞争。
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "SELECT dc.content, dc.metadata "
+                "FROM document_chunks dc "
+                "JOIN documents d ON dc.doc_id = d.id "
+                "WHERE d.status = 'active'"
+            )
+            return cur.fetchall()
+
+    @_locked
     def reindex(self):
         """重建 HNSW 索引（大量写入后建议执行）"""
         self._ensure_connection()

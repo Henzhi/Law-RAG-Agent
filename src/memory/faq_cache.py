@@ -19,9 +19,29 @@ FAQ 语义缓存管理器 (v0.5)
 from __future__ import annotations
 
 import logging
+import threading
+from functools import wraps
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _locked(method):
+    """串行化对共享 PG 连接的访问（psycopg2 连接非线程安全）。
+
+    流式桥接改造后，FAQ 命中检查可能在多个请求的线程池 worker 中并发
+    执行，必须保护共享连接。
+    """
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            # 防御：兼容绕过 __init__ 的构造方式（如测试 mock）
+            lock = threading.Lock()
+            self._lock = lock
+        with lock:
+            return method(self, *args, **kwargs)
+    return wrapper
 
 # 命中阈值：余弦相似度 >= 此值时视为命中
 HIT_THRESHOLD = 0.95
@@ -49,6 +69,7 @@ class FAQCache:
         self._embedder = embedder
         # 保存原始连接串用于重连 — conn.dsn 不保证回传密码，重连可能失败
         self._conn_string = conn_string
+        self._lock = threading.Lock()
         self._conn = psycopg2.connect(conn_string)
         register_vector(self._conn)
 
@@ -67,6 +88,7 @@ class FAQCache:
             self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
 
+    @_locked
     def close(self):
         self._conn.close()
 
@@ -74,6 +96,7 @@ class FAQCache:
     # 缓存查询
     # ------------------------------------------------------------------
 
+    @_locked
     def check(self, query: str) -> dict | None:
         """检查是否有缓存命中
 
@@ -134,6 +157,7 @@ class FAQCache:
     # 缓存写入
     # ------------------------------------------------------------------
 
+    @_locked
     def store(
         self,
         question: str,
@@ -184,6 +208,7 @@ class FAQCache:
     # 缓存失效
     # ------------------------------------------------------------------
 
+    @_locked
     def invalidate_by_law(self, law_id: str) -> int:
         """法律修订时，级联失效所有引用该法律的缓存
 
@@ -202,6 +227,7 @@ class FAQCache:
         logger.warning(f"FAQ缓存级联失效: law={law_id}, {count}条")
         return count
 
+    @_locked
     def clean_expired(self) -> int:
         """清理过期缓存"""
         self._ensure_connection()

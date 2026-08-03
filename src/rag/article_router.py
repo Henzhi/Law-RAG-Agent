@@ -124,26 +124,26 @@ class ArticleRouter(BaseRetriever):
         return None
 
     def _query_db(self, law_hint: str, num: int, limit: int) -> list[RetrievedDoc]:
-        """按法名模糊 + 条款号精确查库。"""
+        """按法名模糊 + 条款号精确查库。
+
+        使用 store 的锁保护共享 PG 连接（避免与 store 自身方法并发竞争）。
+        """
         try:
-            self._store._ensure_connection()
-        except Exception as e:
-            logger.warning(f"article_router 连接失败: {e}")
-            return []
-        try:
-            with self._store._conn.cursor() as cur:
-                cur.execute(
-                    "SELECT dc.content, dc.metadata, "
-                    "1 - (dc.embedding <=> dc.embedding) AS score "
-                    "FROM document_chunks dc "
-                    "JOIN documents d ON dc.doc_id = d.id "
-                    "WHERE d.status = 'active' "
-                    "AND dc.metadata->>'law_name' LIKE %s "
-                    "AND dc.chunk_type = 'article' "
-                    "LIMIT 500",
-                    (f"%{law_hint}%",),
-                )
-                rows = cur.fetchall()
+            with self._store._lock:
+                self._store._ensure_connection()
+                with self._store._conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT dc.content, dc.metadata, "
+                        "1 - (dc.embedding <=> dc.embedding) AS score "
+                        "FROM document_chunks dc "
+                        "JOIN documents d ON dc.doc_id = d.id "
+                        "WHERE d.status = 'active' "
+                        "AND dc.metadata->>'law_name' LIKE %s "
+                        "AND dc.chunk_type = 'article' "
+                        "LIMIT 500",
+                        (f"%{law_hint}%",),
+                    )
+                    rows = cur.fetchall()
         except Exception as e:
             logger.warning(f"article_router 查库失败: {e}")
             return []

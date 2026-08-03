@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ class Bm25Retriever:
         self._index_path = index_path
         self._bm25 = None
         self._chunks: list[dict] = []  # {content, metadata}
+        # 保护懒加载与索引读取（多请求并发时避免重复构建 / 读写竞争）
+        self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # 索引构建
@@ -68,32 +71,26 @@ class Bm25Retriever:
         索引文本（"法名 第X条 正文"），让 BM25 对"法名+关键词"查询有
         精确匹配能力（与向量语义检索形成互补）。
         """
-        if self._bm25 is not None and not force:
-            return
-        from rank_bm25 import BM25Okapi
+        with self._lock:
+            if self._bm25 is not None and not force:
+                return
+            from rank_bm25 import BM25Okapi
 
-        self._store.ensure_tables()
-        with self._store._conn.cursor() as cur:
-            cur.execute(
-                "SELECT dc.content, dc.metadata "
-                "FROM document_chunks dc "
-                "JOIN documents d ON dc.doc_id = d.id "
-                "WHERE d.status = 'active'"
-            )
-            rows = cur.fetchall()
-        self._chunks = [
-            {"content": r[0] or "", "metadata": r[1] or {}}
-            for r in rows
-        ]
-        # 法名拼入索引文本（去重，避免重复计数干扰 BM25 词频）
-        tokenized = []
-        for c in self._chunks:
-            meta = c["metadata"]
-            law_name = meta.get("law_name", "")
-            full_text = f"{law_name} {c['content']}" if law_name else c["content"]
-            tokenized.append(_tokenize(full_text))
-        self._bm25 = BM25Okapi(tokenized)
-        logger.info(f"BM25 索引就绪: {len(self._chunks)} 个 chunks（法名已拼入）")
+            self._store.ensure_tables()
+            rows = self._store.fetch_all_active_chunks()
+            self._chunks = [
+                {"content": r[0] or "", "metadata": r[1] or {}}
+                for r in rows
+            ]
+            # 法名拼入索引文本（去重，避免重复计数干扰 BM25 词频）
+            tokenized = []
+            for c in self._chunks:
+                meta = c["metadata"]
+                law_name = meta.get("law_name", "")
+                full_text = f"{law_name} {c['content']}" if law_name else c["content"]
+                tokenized.append(_tokenize(full_text))
+            self._bm25 = BM25Okapi(tokenized)
+            logger.info(f"BM25 索引就绪: {len(self._chunks)} 个 chunks（法名已拼入）")
 
     def is_ready(self) -> bool:
         return self._bm25 is not None
@@ -107,22 +104,23 @@ class Bm25Retriever:
 
         if self._bm25 is None:
             self.load_index()
-        tokens = _tokenize(query)
-        if not tokens:
-            return []
-        scores = self._bm25.get_scores(tokens)
-        # 按 BM25 分数排名取 top_k（排名即顺序；score 仅作排序，不参与融合）
-        order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        docs: list[RetrievedDoc] = []
-        for rank, idx in enumerate(order[:top_k], 1):
-            meta = self._chunks[idx]["metadata"]
-            docs.append(RetrievedDoc(
-                content=self._chunks[idx]["content"],
-                score=1.0 / rank,  # 排名倒数，仅占位
-                law_name=meta.get("law_name", ""),
-                chapter=meta.get("chapter", ""),
-                section=meta.get("section", ""),
-                article_range=meta.get("article_range", ""),
-                chunk_type=meta.get("chunk_type", ""),
-            ))
-        return docs
+        with self._lock:
+            tokens = _tokenize(query)
+            if not tokens:
+                return []
+            scores = self._bm25.get_scores(tokens)
+            # 按 BM25 分数排名取 top_k（排名即顺序；score 仅作排序，不参与融合）
+            order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+            docs: list[RetrievedDoc] = []
+            for rank, idx in enumerate(order[:top_k], 1):
+                meta = self._chunks[idx]["metadata"]
+                docs.append(RetrievedDoc(
+                    content=self._chunks[idx]["content"],
+                    score=1.0 / rank,  # 排名倒数，仅占位
+                    law_name=meta.get("law_name", ""),
+                    chapter=meta.get("chapter", ""),
+                    section=meta.get("section", ""),
+                    article_range=meta.get("article_range", ""),
+                    chunk_type=meta.get("chunk_type", ""),
+                ))
+            return docs

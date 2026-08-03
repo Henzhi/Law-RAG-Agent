@@ -10,8 +10,8 @@
         @input="autoResize"
         ref="textareaRef"
       ></textarea>
-      <button v-if="disabled" class="btn-sending" title="停止生成中">
-        <span class="dot-pulse"></span>
+      <button v-if="disabled" class="btn-stop" title="停止生成" @click="emit('stop')">
+        <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       </button>
       <button v-else class="btn-send" @click="doSend" :disabled="!text.trim()" title="发送">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
@@ -24,7 +24,7 @@
 import { ref } from 'vue'
 
 const props = defineProps({ disabled: Boolean })
-const emit = defineEmits(['send'])
+const emit = defineEmits(['send', 'stop'])
 
 const text = ref('')
 const textareaRef = ref(null)
@@ -119,29 +119,19 @@ textarea::placeholder { color: var(--color-text-muted); }
 .btn-send:hover:not(:disabled) { background: var(--color-primary-hover); transform: scale(1.05); }
 .btn-send:disabled { background: var(--color-border); color: var(--color-text-muted); cursor: not-allowed; }
 
-.btn-sending {
+.btn-stop {
   flex-shrink: 0;
   width: 36px;
   height: 36px;
   border-radius: 50%;
   border: none;
-  background: var(--color-primary-light);
-  cursor: default;
+  background: var(--color-danger, #ef4444);
+  color: #fff;
+  cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
+  transition: all 150ms ease;
 }
-
-.dot-pulse {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-primary);
-  animation: pulse 1.2s ease-in-out infinite;
-}
-@keyframes pulse {
-  0%, 100% { opacity: 0.3; transform: scale(0.8); }
-  50% { opacity: 1; transform: scale(1.3); }
-}
+.btn-stop:hover { background: var(--color-danger-hover, #dc2626); transform: scale(1.05); }
 </style>
