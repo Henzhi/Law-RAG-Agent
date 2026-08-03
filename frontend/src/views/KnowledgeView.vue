@@ -1,7 +1,10 @@
 <template>
   <div class="knowledge-page">
     <header class="page-header">
-      <button class="btn-back" @click="$router.push('/')">← 返回问答</button>
+      <button class="btn-back" @click="$router.push('/')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        返回问答
+      </button>
       <h2>知识库管理</h2>
       <div class="header-actions">
         <button class="btn-toggle-upload" @click="showUpload = !showUpload">
@@ -22,9 +25,12 @@
             文档类型
             <select v-model="docType">
               <option value="law">法律</option>
-              <option value="interpretation">司法解释</option>
+              <option value="regulation">行政法规</option>
+              <option value="judicial_interpretation">司法解释</option>
+              <option value="local_regulation">地方性法规</option>
+              <option value="constitution">宪法</option>
+              <option value="supervision">监察法规</option>
               <option value="case">典型案例</option>
-              <option value="regulation">地方法规</option>
             </select>
           </label>
           <label>
@@ -34,6 +40,15 @@
           <label>
             生效日期
             <input v-model="effectiveDate" type="date" />
+          </label>
+          <label>
+            效力状态
+            <select v-model="docStatus">
+              <option value="active">现行有效</option>
+              <option value="repealed">已废止</option>
+              <option value="revised">已修改</option>
+              <option value="pending">尚未生效</option>
+            </select>
           </label>
         </div>
 
@@ -86,9 +101,19 @@
         <select v-model="filterType" @change="loadDocuments" class="filter-select">
           <option value="">全部类型</option>
           <option value="law">法律</option>
-          <option value="interpretation">司法解释</option>
+          <option value="regulation">行政法规</option>
+          <option value="judicial_interpretation">司法解释</option>
+          <option value="local_regulation">地方性法规</option>
+          <option value="constitution">宪法</option>
+          <option value="supervision">监察法规</option>
           <option value="case">典型案例</option>
-          <option value="regulation">地方法规</option>
+        </select>
+        <select v-model="filterStatus" @change="loadDocuments" class="filter-select">
+          <option value="">全部效力</option>
+          <option value="active">现行有效</option>
+          <option value="repealed">已废止</option>
+          <option value="revised">已修改</option>
+          <option value="pending">尚未生效</option>
         </select>
       </div>
 
@@ -99,6 +124,7 @@
           <tr>
             <th>文档名称</th>
             <th>类型</th>
+            <th>效力</th>
             <th>来源</th>
             <th>块数</th>
             <th>上传时间</th>
@@ -109,6 +135,7 @@
           <tr v-for="doc in documents" :key="doc.id">
             <td class="title-cell" :title="doc.title">{{ doc.title }}</td>
             <td><span class="type-badge" :class="doc.doc_type">{{ typeLabel(doc.doc_type) }}</span></td>
+            <td><span class="status-badge" :class="doc.status || 'active'">{{ statusLabel(doc.status) }}</span></td>
             <td class="source-cell">{{ doc.source || '-' }}</td>
             <td class="num-cell">{{ doc.chunks }}</td>
             <td class="date-cell">{{ formatDate(doc.created_at) }}</td>
@@ -142,19 +169,19 @@
       </div>
     </div>
 
-    <!-- 查看原文弹窗 -->
-    <div v-if="viewTarget" class="modal-overlay" @click.self="viewTarget = null">
+    <!-- 查看原文弹窗（滚动懒加载） -->
+    <div v-if="viewTarget" class="modal-overlay" @click.self="closeView">
       <div class="modal modal-wide">
         <h3>{{ viewTarget.title }}</h3>
         <div class="view-meta">
           <span v-if="viewTarget.doc_type">类型: {{ typeLabel(viewTarget.doc_type) }}</span>
           <span v-if="viewTarget.source">来源: {{ viewTarget.source }}</span>
           <span v-if="viewTarget.effective_date">生效: {{ viewTarget.effective_date }}</span>
-          <span>{{ viewChunks.length }} 个条文块</span>
+          <span>已加载 {{ viewChunks.length }} / {{ viewTotal }} 个条文块</span>
         </div>
         <div class="view-loading" v-if="viewLoading">正在加载原文...</div>
         <div class="view-empty" v-else-if="!viewChunks.length">该文档暂无内容</div>
-        <div v-else class="view-body">
+        <div v-else ref="viewBodyEl" class="view-body" @scroll="onViewScroll">
           <div v-for="(c, i) in viewChunks" :key="c.id" class="chunk-item">
             <div class="chunk-head">
               <span class="chunk-index">{{ i + 1 }}</span>
@@ -162,9 +189,14 @@
             </div>
             <pre class="chunk-content">{{ c.content }}</pre>
           </div>
+          <div class="view-more">
+            <span v-if="viewLoadingMore" class="view-more-loading">加载中...</span>
+            <span v-else-if="viewChunks.length < viewTotal" class="view-more-hint">向下滚动加载更多</span>
+            <span v-else class="view-more-done">已全部加载（{{ viewTotal }} 条）</span>
+          </div>
         </div>
         <div class="modal-actions">
-          <button class="btn-cancel" @click="viewTarget = null">关闭</button>
+          <button class="btn-cancel" @click="closeView">关闭</button>
         </div>
       </div>
     </div>
@@ -179,12 +211,16 @@ import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getD
 const documents = ref([])
 const loading = ref(false)
 const filterType = ref('')
+const filterStatus = ref('')
 const totalDocuments = computed(() => documents.value.length)
 
 async function loadDocuments() {
   loading.value = true
   try {
-    const res = await listDocuments(filterType.value || undefined)
+    const res = await listDocuments(
+      filterType.value || undefined,
+      filterStatus.value || undefined,
+    )
     documents.value = res.documents || []
   } catch (e) {
     console.error('加载文档列表失败:', e)
@@ -193,20 +229,28 @@ async function loadDocuments() {
   }
 }
 
-// --- 查看原文 ---
+// --- 查看原文（滚动懒加载分页） ---
+const CHUNK_PAGE_SIZE = 50  // 每页条文块数量
 const viewTarget = ref(null)
 const viewChunks = ref([])
 const viewLoading = ref(false)
+const viewLoadingMore = ref(false)
+const viewTotal = ref(0)
 const viewing = ref(null)
+const viewBodyEl = ref(null)
+let viewOffset = 0
 
 async function viewDocument(doc) {
   viewing.value = doc.id
   viewTarget.value = doc
   viewChunks.value = []
+  viewTotal.value = doc.chunks || 0
+  viewOffset = 0
   viewLoading.value = true
   try {
-    const res = await getDocumentChunks(doc.id)
+    const res = await getDocumentChunks(doc.id, CHUNK_PAGE_SIZE, 0)
     viewChunks.value = res.chunks || []
+    if (res.total != null) viewTotal.value = res.total
   } catch (e) {
     alert('加载原文失败: ' + e.message)
     viewTarget.value = null
@@ -214,6 +258,41 @@ async function viewDocument(doc) {
     viewLoading.value = false
     viewing.value = null
   }
+}
+
+// 滚动触底加载下一页（一次性请求，防止重复触发）
+async function loadMoreChunks() {
+  if (viewLoadingMore.value || viewLoading.value) return
+  if (viewChunks.value.length >= viewTotal.value) return
+  viewLoadingMore.value = true
+  const nextOffset = viewChunks.value.length
+  try {
+    const res = await getDocumentChunks(viewTarget.value.id, CHUNK_PAGE_SIZE, nextOffset)
+    const more = res.chunks || []
+    if (more.length) {
+      viewChunks.value = viewChunks.value.concat(more)
+      viewOffset = nextOffset + more.length
+    }
+  } catch (e) {
+    console.error('加载更多条文失败:', e)
+  } finally {
+    viewLoadingMore.value = false
+  }
+}
+
+function onViewScroll() {
+  const el = viewBodyEl.value
+  if (!el) return
+  // 距离底部不足 120px 时触发加载
+  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) {
+    loadMoreChunks()
+  }
+}
+
+function closeView() {
+  viewTarget.value = null
+  viewChunks.value = []
+  viewTotal.value = 0
 }
 
 // --- 删除 ---
@@ -244,6 +323,7 @@ const showUpload = ref(false)
 const docType = ref('law')
 const source = ref('')
 const effectiveDate = ref('')
+const docStatus = ref('active')
 const files = ref([])          // 待上传文件数组
 const uploading = ref(false)
 const uploadError = ref('')
@@ -316,7 +396,7 @@ async function handleUpload() {
   await mapLimit(files.value, MAX_CONCURRENCY, async (f, i) => {
     const t = tasks.value[i]
     try {
-      const res = await uploadDocument(f, docType.value, source.value, effectiveDate.value)
+      const res = await uploadDocument(f, docType.value, source.value, effectiveDate.value, docStatus.value)
       t.task_id = res.task_id
       t.status = res.status || 'pending'
       uploadOk.value = `已提交 ${f.name}`
@@ -351,11 +431,29 @@ function pollTask(t) {
 
 // --- 工具函数 ---
 function typeLabel(t) {
-  return { law: '法律', interpretation: '司法解释', case: '典型案例', regulation: '地方法规' }[t] || t
+  // flk 顶级分类规范值 + 历史旧值兼容（judicial/interpretation/local）
+  return {
+    law: '法律', regulation: '行政法规',
+    judicial_interpretation: '司法解释', local_regulation: '地方性法规',
+    constitution: '宪法', supervision: '监察法规', case: '典型案例',
+    // 历史数据旧值
+    interpretation: '司法解释', judicial: '司法解释', local: '地方性法规',
+  }[t] || t
+}
+
+// 效力状态中文名（历史数据无 status 时默认显示现行有效）
+function statusLabel(s) {
+  return { active: '现行有效', repealed: '已废止', revised: '已修改', pending: '尚未生效' }[s || 'active'] || (s || '现行有效')
 }
 
 function chunkTypeLabel(t) {
-  return { article: '法条', case: '案例段落', summary: '章摘要', judgment: '判决要点', guideline: '指导要点' }[t] || (t || '正文')
+  return {
+    article: '法条', case: '案例段落', summary: '章摘要',
+    judgment: '判决要点', guideline: '指导要点',
+    constitution: '宪法条文', law: '法律条文', regulation: '行政法规条文',
+    supervision: '监察法规条文', local_regulation: '地方法规条文',
+    judicial_interpretation: '司法解释段落', interpretation: '司法解释段落',
+  }[t] || (t || '正文')
 }
 
 function formatDate(d) {
@@ -377,7 +475,8 @@ onMounted(() => {
 .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
 .page-header h2 { font-size: 22px; flex: 1; }
 .header-actions { display: flex; gap: 8px; }
-.btn-back { background: none; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 6px 14px; cursor: pointer; color: var(--color-text-muted); font-size: 14px; }
+.btn-back { background: none; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 7px 14px; cursor: pointer; color: var(--color-text-secondary); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; transition: all var(--transition); }
+.btn-back:hover { background: var(--color-sidebar-hover); color: var(--color-primary); }
 .btn-toggle-upload { padding: 8px 18px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); font-size: 14px; cursor: pointer; }
 .btn-refresh { background: none; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 6px 14px; cursor: pointer; color: var(--color-text-muted); font-size: 14px; }
 .btn-refresh:disabled { opacity: 0.5; }
@@ -393,7 +492,7 @@ onMounted(() => {
 .file-input-row { display: flex; align-items: center; gap: 12px; }
 .file-label { cursor: pointer; }
 .file-label input[type="file"] { display: none; }
-.file-btn { display: inline-block; padding: 8px 20px; background: var(--color-primary-light); color: var(--color-primary-dark); border-radius: var(--radius); font-size: 14px; font-weight: 500; }
+.file-btn { display: inline-block; padding: 8px 20px; background: var(--color-primary-light); color: var(--color-primary); border-radius: var(--radius); font-size: 14px; font-weight: 500; }
 .file-name { font-size: 13px; color: var(--color-text-muted); }
 .file-list { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--color-border); border-radius: var(--radius); overflow: hidden; }
 .file-list-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 13px; border-top: 1px solid var(--color-border); }
@@ -416,7 +515,7 @@ onMounted(() => {
 .task-error { color: var(--color-error); font-size: 12px; }
 .task-row { display: flex; justify-content: space-between; align-items: center; }
 .task-id { font-family: monospace; font-size: 13px; }
-.task-status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--color-primary-light); color: var(--color-primary-dark); }
+.task-status { font-size: 12px; padding: 3px 10px; border-radius: 10px; background: var(--color-primary-light); color: var(--color-primary); }
 .task-status.done { background: #D1FAE5; color: #065F46; }
 .task-status.failed { background: #FEE2E2; color: #991B1B; }
 .progress-bar { height: 8px; background: var(--color-border); border-radius: 4px; overflow: hidden; }
@@ -443,12 +542,23 @@ onMounted(() => {
 
 .type-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; }
 .type-badge.law { background: #EDE9FE; color: #5B21B6; }
-.type-badge.interpretation { background: #DBEAFE; color: #1E40AF; }
-.type-badge.case { background: #FEF3C7; color: #92400E; }
 .type-badge.regulation { background: #D1FAE5; color: #065F46; }
+.type-badge.judicial_interpretation,
+.type-badge.interpretation, .type-badge.judicial { background: #DBEAFE; color: #1E40AF; }
+.type-badge.local_regulation,
+.type-badge.local { background: #FCE7F3; color: #9D174D; }
+.type-badge.constitution { background: #FEF9C3; color: #854D0E; }
+.type-badge.supervision { background: #E0E7FF; color: #3730A3; }
+.type-badge.case { background: #FEF3C7; color: #92400E; }
+/* 效力状态徽标 */
+.status-badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.status-badge.active { background: #DCFCE7; color: #166534; }
+.status-badge.repealed { background: #FEE2E2; color: #991B1B; }
+.status-badge.revised { background: #E0E7FF; color: #3730A3; }
+.status-badge.pending { background: #FEF3C7; color: #92400E; }
 
 .actions-cell { white-space: nowrap; }
-.btn-view { padding: 4px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-primary-light); color: var(--color-primary-dark); cursor: pointer; font-size: 13px; margin-right: 6px; }
+.btn-view { padding: 4px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-primary-light); color: var(--color-primary); cursor: pointer; font-size: 13px; margin-right: 6px; }
 .btn-view:hover { background: #EDE9FE; }
 .btn-view:disabled { opacity: 0.5; cursor: not-allowed; }
 .btn-delete { padding: 4px 12px; border: 1px solid #FECACA; border-radius: var(--radius); background: #FEF2F2; color: #DC2626; cursor: pointer; font-size: 13px; }
@@ -463,9 +573,22 @@ onMounted(() => {
 .view-body { max-height: 60vh; overflow-y: auto; padding-right: 4px; }
 .chunk-item { margin-bottom: 12px; border: 1px solid var(--color-border); border-radius: 6px; overflow: hidden; }
 .chunk-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--color-primary-light); border-bottom: 1px solid var(--color-border); }
-.chunk-index { font-weight: 600; color: var(--color-primary-dark); font-size: 13px; }
+.chunk-index { font-weight: 600; color: var(--color-primary); font-size: 13px; }
 .chunk-type { font-size: 12px; color: var(--color-text-muted); }
 .chunk-content { margin: 0; padding: 12px; font-size: 14px; line-height: 1.8; color: var(--color-text); white-space: pre-wrap; word-break: break-word; font-family: var(--font-body); }
+.view-more { text-align: center; padding: 14px 0 8px; font-size: 13px; color: var(--color-text-muted); }
+.view-more-loading { display: inline-flex; align-items: center; gap: 6px; }
+.view-more-loading::before {
+  content: '';
+  width: 12px; height: 12px;
+  border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: kspin 0.6s linear infinite;
+  display: inline-block;
+}
+@keyframes kspin { to { transform: rotate(360deg); } }
+.view-more-done { color: var(--color-success); }
 
 /* Modal */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 100; }
@@ -477,4 +600,32 @@ onMounted(() => {
 .btn-cancel { padding: 8px 20px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-bg); cursor: pointer; font-size: 14px; }
 .btn-confirm-delete { padding: 8px 20px; border: none; border-radius: var(--radius); background: var(--color-error); color: #fff; cursor: pointer; font-size: 14px; }
 .btn-confirm-delete:disabled { opacity: 0.5; }
+
+/* ===== 深色模式覆盖：标签/徽标柔化为低饱和配色 ===== */
+:root[data-theme='dark'] .type-badge,
+:root[data-theme='dark'] .status-badge,
+:root[data-theme='dark'] .task-status {
+  background: var(--color-surface-hover);
+  color: var(--color-text-secondary);
+}
+:root[data-theme='dark'] .type-badge.law { background: rgba(139, 92, 246, 0.18); color: #C4B5FD; }
+:root[data-theme='dark'] .type-badge.regulation { background: rgba(16, 185, 129, 0.16); color: #6EE7B7; }
+:root[data-theme='dark'] .type-badge.interpretation,
+:root[data-theme='dark'] .type-badge.judicial { background: rgba(59, 130, 246, 0.18); color: #93C5FD; }
+:root[data-theme='dark'] .type-badge.local_regulation,
+:root[data-theme='dark'] .type-badge.local { background: rgba(236, 72, 153, 0.16); color: #F9A8D4; }
+:root[data-theme='dark'] .type-badge.constitution { background: rgba(245, 158, 11, 0.16); color: #FCD34D; }
+:root[data-theme='dark'] .type-badge.supervision { background: rgba(99, 102, 241, 0.18); color: #A5B4FC; }
+:root[data-theme='dark'] .type-badge.case { background: rgba(245, 158, 11, 0.16); color: #FDE68A; }
+:root[data-theme='dark'] .status-badge.active { background: rgba(16, 185, 129, 0.16); color: #6EE7B7; }
+:root[data-theme='dark'] .status-badge.repealed { background: rgba(239, 68, 68, 0.16); color: #FCA5A5; }
+:root[data-theme='dark'] .status-badge.revised { background: rgba(99, 102, 241, 0.18); color: #A5B4FC; }
+:root[data-theme='dark'] .status-badge.pending { background: rgba(245, 158, 11, 0.16); color: #FCD34D; }
+:root[data-theme='dark'] .task-status.done { background: rgba(16, 185, 129, 0.16); color: #6EE7B7; }
+:root[data-theme='dark'] .task-status.failed { background: rgba(239, 68, 68, 0.16); color: #FCA5A5; }
+:root[data-theme='dark'] .btn-view { background: rgba(99, 102, 241, 0.15); }
+:root[data-theme='dark'] .btn-view:hover { background: rgba(99, 102, 241, 0.25); }
+:root[data-theme='dark'] .btn-delete { border-color: rgba(248, 113, 113, 0.4); background: rgba(248, 113, 113, 0.12); color: #F87171; }
+:root[data-theme='dark'] .btn-delete:hover { background: rgba(248, 113, 113, 0.22); }
+:root[data-theme='dark'] .doc-table tr:hover { background: rgba(99, 102, 241, 0.08); }
 </style>

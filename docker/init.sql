@@ -71,8 +71,9 @@ COMMENT ON COLUMN conversations.updated_at IS '最后更新时间';
 -- 支持版本管理和法律修订追踪（status 字段标记新旧版本）
 CREATE TABLE IF NOT EXISTS documents (
     id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 文档唯一标识
-    doc_type        VARCHAR(20) NOT NULL,                        -- 文档类型: law(法律) | interpretation(司法解释)
-                                                                 --           case(案例) | regulation(地方法规)
+    doc_type        VARCHAR(40) NOT NULL,                        -- 文档类型(flk顶级分类): law(法律) | regulation(行政法规)
+                                                                 --  judicial_interpretation(司法解释) | local_regulation(地方性法规)
+                                                                 --  constitution(宪法) | supervision(监察法规) | case(案例)
     title           VARCHAR(500) NOT NULL,                       -- 文档标题（如"中华人民共和国刑法"）
     source          VARCHAR(500),                                -- 来源（如"全国人大"、"最高法"）
     effective_date  DATE,                                        -- 生效日期
@@ -90,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_docs_type_status ON documents(doc_type, status);
 
 COMMENT ON TABLE documents IS '文档主表：法律/司法解释/案例/地方法规的元信息，支持版本管理和修订追踪';
 COMMENT ON COLUMN documents.id IS '文档唯一标识 UUID';
-COMMENT ON COLUMN documents.doc_type IS '文档类型: law(法律) | interpretation(司法解释) | case(案例) | regulation(地方法规)';
+COMMENT ON COLUMN documents.doc_type IS '文档类型(flk顶级分类): law | regulation | judicial_interpretation | local_regulation | constitution | supervision | case';
 COMMENT ON COLUMN documents.title IS '文档标题（如"中华人民共和国刑法"）';
 COMMENT ON COLUMN documents.source IS '来源（如"全国人大"、"最高法"）';
 COMMENT ON COLUMN documents.effective_date IS '生效日期';
@@ -109,7 +110,8 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 块唯一标识
     doc_id          UUID REFERENCES documents(id)                -- 所属文档（级联删除：删文档则块全删）
                         ON DELETE CASCADE,
-    chunk_type      VARCHAR(20) NOT NULL,                        -- 块类型: article(法条) | judgment(判决要点)
+    chunk_type      VARCHAR(40) NOT NULL,                        -- 块类型: article(法条) | 非条文体按 doc_type 存
+                                                                 --  (case/judicial_interpretation/...) | judgment(判决要点)
                                                                  --         summary(章级摘要，检索时过滤) | guideline(指导要点)
     content         TEXT NOT NULL,                               -- 块的文本内容（以「条」为单位）
     embedding_model VARCHAR(50) NOT NULL,                        -- 向量化模型标识（如 "bge-m3"、"ollama:bge-m3"）
@@ -138,7 +140,7 @@ CREATE INDEX IF NOT EXISTS idx_chunks_model ON document_chunks(embedding_model);
 COMMENT ON TABLE document_chunks IS '文档块表（向量索引核心）：按「条」切分的文档块，每条独立向量，halfvec 半精度存储减半';
 COMMENT ON COLUMN document_chunks.id IS '块唯一标识 UUID';
 COMMENT ON COLUMN document_chunks.doc_id IS '所属文档 ID（级联删除）';
-COMMENT ON COLUMN document_chunks.chunk_type IS '块类型: article(法条) | judgment(判决要点) | summary(章级摘要) | guideline(指导要点)';
+COMMENT ON COLUMN document_chunks.chunk_type IS '块类型: article(法条) | 非条文体按 doc_type(case/judicial_interpretation等) | judgment(判决要点) | summary(章级摘要) | guideline(指导要点)';
 COMMENT ON COLUMN document_chunks.content IS '块的文本内容（以「条」为单位）';
 COMMENT ON COLUMN document_chunks.embedding_model IS '向量化模型标识（如"bge-m3"），查询时 WHERE embedding_model=current 实现模型隔离';
 COMMENT ON COLUMN document_chunks.embedding IS '文本向量（半精度 halfvec，3072维为最大模型预留，小模型自动补零适配）';
@@ -151,7 +153,7 @@ COMMENT ON COLUMN document_chunks.created_at IS '写入时间';
 
 -- 缓存高频问答，语义相似度 > 0.95 时直接返回缓存答案
 -- 节省 LLM 调用成本，降低响应延迟（缓存命中时 <100ms）
--- TTL: 7 天自动过期；关联法律修订时级联失效
+-- TTL: 1 小时自动过期（命中自动续期）；关联法律修订时级联失效
 CREATE TABLE IF NOT EXISTS faq_cache (
     id              UUID DEFAULT gen_random_uuid() PRIMARY KEY,  -- 缓存条目 ID
     question        TEXT NOT NULL,                               -- 用户原始问题
@@ -163,7 +165,7 @@ CREATE TABLE IF NOT EXISTS faq_cache (
     hit_count       INT DEFAULT 1,                               -- 命中次数（用于淘汰低频缓存）
     status          VARCHAR(20) DEFAULT 'active',                -- active(有效) | expired(TTL过期) | invalidated(修法失效)
     created_at      TIMESTAMPTZ DEFAULT now(),                    -- 创建时间
-    expires_at      TIMESTAMPTZ                                  -- 过期时间（创建时设为 now() + 7 days）
+    expires_at      TIMESTAMPTZ                                  -- 过期时间（写入时设为 now() + 1 hour，命中自动续期）
 );
 
 -- HNSW 索引：快速找到语义相似的已缓存问题
@@ -171,7 +173,7 @@ CREATE INDEX IF NOT EXISTS idx_faq_embedding
     ON faq_cache USING hnsw (question_embed halfvec_cosine_ops)
     WITH (m = 16, ef_construction = 200);
 
-COMMENT ON TABLE faq_cache IS 'FAQ 语义缓存表：高频问答缓存，相似度>0.95 直接返回，TTL 7天，修法时级联失效';
+COMMENT ON TABLE faq_cache IS 'FAQ 语义缓存表：高频问答缓存，相似度>0.95 直接返回，TTL 1小时（命中自动续期），修法时级联失效';
 COMMENT ON COLUMN faq_cache.id IS '缓存条目 ID';
 COMMENT ON COLUMN faq_cache.question IS '用户原始问题';
 COMMENT ON COLUMN faq_cache.question_embed IS '问题向量（用于语义相似度匹配）';
@@ -182,7 +184,7 @@ COMMENT ON COLUMN faq_cache.confidence IS '回答置信度（低置信度不缓�
 COMMENT ON COLUMN faq_cache.hit_count IS '命中次数（淘汰低频缓存用）';
 COMMENT ON COLUMN faq_cache.status IS '状态: active(有效) | expired(TTL过期) | invalidated(修法失效)';
 COMMENT ON COLUMN faq_cache.created_at IS '创建时间';
-COMMENT ON COLUMN faq_cache.expires_at IS '过期时间（创建时设为 now() + 7 days）';
+COMMENT ON COLUMN faq_cache.expires_at IS '过期时间（写入时设为 now() + 1 hour，命中缓存自动续期刷新）';
 
 -- ============================================================
 -- 5. 对话记忆表

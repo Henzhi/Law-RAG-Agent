@@ -20,6 +20,9 @@ dependencies = [
     "langgraph~=1.2.0",          # 1.2.8  — StateGraph 有状态多 Agent 编排
     # ---- 向量检索（支撑需求：F-04、NF-1）----
     # v0.6 纯 PG 架构：检索统一走 pgvector（halfvec + HNSW），已移除 FAISS/BM25
+    # v0.7 混合检索：Python 端 BM25（jieba 分词 + rank-bm25），rank-based 融合（不融合分数）
+    "jieba>=0.42.1",
+    "rank-bm25>=0.2.2",
     # ---- Embedding（支撑需求：F-03、NF-3）----
     # 直接调用 Ollama API（避免 langchain-ollama 版本冲突）
     # 使用 ollama Python SDK 调用 nomic-embed-text

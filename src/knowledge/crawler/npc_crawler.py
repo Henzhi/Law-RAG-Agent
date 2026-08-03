@@ -36,6 +36,7 @@ LIST_URL = f"{API_BASE}/law-search/search/list"
 DOWNLOAD_URL = f"{API_BASE}/law-search/download/pc"
 
 # doc_type -> (flfgCodeId 分类码列表, 输出子目录名)
+# doc_type 使用 flk 顶级分类规范值（见 src.knowledge.doc_types）：
 # 分类码来自 2026 实测：宪法 100；法律 110/120/130/140/150/160/180；
 # 行政法规 210；监察法规 220；地方法规 230；司法解释 320/340
 TYPE_MAP: dict[str, tuple[list[int], str]] = {
@@ -43,8 +44,8 @@ TYPE_MAP: dict[str, tuple[list[int], str]] = {
     "law": ([110, 120, 130, 140, 150, 160, 180], "laws"),          # 法律 / 法律解释
     "regulation": ([210], "regulations"),                         # 行政法规
     "supervision": ([220], "supervision_regulations"),            # 监察法规
-    "judicial": ([320, 340], "judicial_interpretations"),         # 司法解释
-    "local": ([230], "local_regulations"),                        # 地方性法规
+    "judicial_interpretation": ([320, 340], "judicial_interpretations"),  # 司法解释
+    "local_regulation": ([230], "local_regulations"),             # 地方性法规
 }
 
 # 该数据源不支持的类型（案例 / 裁判文书不在 flk）
@@ -132,8 +133,9 @@ class NpcLawCrawler:
         limit: int = 50,
         force: bool = False,
         subdir: str = "",
-        store: str = "txt",
+        store: str = "pg",
         progress_cb: callable | None = None,
+        sxx: list[str] | None = None,
     ) -> CrawlResult:
         """爬取并落地。
 
@@ -148,6 +150,9 @@ class NpcLawCrawler:
                       "txt"  -> 落地到 LawData/<子目录>/*.txt（原始文本存档）
                       "both" -> 两者都做
             progress_cb: 每处理一条后回调 CrawlResult，用于进度上报
+            sxx     : 效力状态过滤（flk 码），None=仅现行有效["3"]；
+                      可组合如 ["3"]现行有效、["1","3"]现行+已废止、
+                      ["1","2","3","4"]全部。
         """
         if doc_type in UNSUPPORTED_TYPES:
             raise ValueError(
@@ -155,27 +160,33 @@ class NpcLawCrawler:
                 "如需案例，请提供其他数据源或扩展爬虫。"
             )
 
+        # 默认仅现行有效（历史行为）；传入 sxx 则按需采集
+        status_filter = sxx if sxx else ["3"]
+
+        # 自动分类模式：不指定 doc_type，按每条 flxz 自动判定归属
+        if doc_type == "auto":
+            return self._crawl_auto(keyword, limit, force, store, progress_cb, status_filter)
+
         if doc_type == "all":
             merged = CrawlResult()
             for t in TYPE_MAP:
-                sub = self._crawl_one(t, keyword, limit, force, "", store, progress_cb)
+                sub = self._crawl_one(t, keyword, limit, force, "", store, progress_cb, status_filter)
                 for k in ("total", "added", "updated", "skipped", "failed"):
                     setattr(merged, k, getattr(merged, k) + getattr(sub, k))
                 merged.errors.extend(sub.errors)
                 merged.files.extend(sub.files)
-            if self._pg_store is not None:
-                self._pg_store.reindex()
+            # 注：HNSW 索引增量生效，入库无需 REINDEX（全量重建会锁表）；
+            # 如确需整理索引，由调用方显式调用 store.reindex()
             return merged
 
-        res = self._crawl_one(doc_type, keyword, limit, force, subdir, store, progress_cb)
-        if self._pg_store is not None:
-            self._pg_store.reindex()
+        res = self._crawl_one(doc_type, keyword, limit, force, subdir, store, progress_cb, status_filter)
+        # 注：HNSW 索引增量生效，入库无需 REINDEX（全量重建会锁表）
         return res
 
     # ------------------------------------------------------------------
     # 内部实现
     # ------------------------------------------------------------------
-    def _crawl_one(self, doc_type, keyword, limit, force, subdir, store, progress_cb) -> CrawlResult:
+    def _crawl_one(self, doc_type, keyword, limit, force, subdir, store, progress_cb, status_filter=None) -> CrawlResult:
         code_ids, default_sub = TYPE_MAP.get(doc_type, ([], doc_type))
         out_dir = self.law_data_dir / (subdir or default_sub)
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -191,7 +202,7 @@ class NpcLawCrawler:
         manifest = dict(manifest_before)
         result = CrawlResult()
 
-        docs = self._fetch_list(code_ids, keyword, limit)
+        docs = self._fetch_list(code_ids, keyword, limit, status_filter)
         result.total = len(docs)
         logger.info(f"[crawl] type={doc_type} 命中 {len(docs)} 部, 输出目录={out_dir}, 目标={sinks}")
 
@@ -204,15 +215,23 @@ class NpcLawCrawler:
             # pg 列是 DATE，仅当格式为 YYYY-MM-DD 才传入，否则按 NULL 处理
             eff_pg = effective_date if _DATE_RE.match(effective_date) else None
 
-            # 按 sink 分别判定增量去重
+            # 效力状态：flk 列表返回的 sxx 字段（字符串 "1/2/3/4"）
+            # 1=已废止 2=已修改 3=现行有效 4=尚未生效
+            from src.knowledge.doc_types import status_from_sxx
+            status = status_from_sxx(item.get("sxx"))
+
+            # 按 sink 分别判定增量去重。
+            # pg 侧按 (title, status) 精确匹配：同一标题不同效力版本（如现行有效
+            # 与已废止）视为不同文档，各自入库；同标题同状态才算已存在。
             txt_existed = doc_id in manifest_before
             txt_skip = (not force) and txt_existed
             pg_existed = False
             if do_pg and self._pg_store is not None:
-                pg_existed = self._pg_store.get_document_id_by_title(title) is not None
+                pg_existed = self._pg_store.get_document_id_by_title(title, status=status) is not None
             pg_skip = (not force) and pg_existed
 
-            if txt_skip and pg_skip:
+            # 仅当所有启用的 sink 都已存在时整条跳过；否则各 sink 各自去重写入
+            if (not do_txt or txt_skip) and (not do_pg or pg_skip):
                 result.skipped += 1
                 logger.debug(f"[crawl] 跳过(已存在): {title}")
                 continue
@@ -239,7 +258,7 @@ class NpcLawCrawler:
 
                 # 2) 入库 pgvector（增量按标题去重）
                 if do_pg and not pg_skip:
-                    n = self._ingest_pg(doc_type, title, text, eff_pg, force)
+                    n = self._ingest_pg(doc_type, title, text, eff_pg, force, status)
                     result.files.append(f"pg:{title}")
                     if pg_existed:
                         result.updated += 1
@@ -251,6 +270,108 @@ class NpcLawCrawler:
                 result.failed += 1
                 result.errors.append(f"{title}: {e}")
                 logger.warning(f"[crawl] 失败 {title}: {e}")
+
+            self._save_manifest(out_dir, manifest)
+            if progress_cb:
+                progress_cb(result)
+            time.sleep(self.sleep)
+
+        return result
+
+    def _crawl_auto(self, keyword, limit, force, store, progress_cb, status_filter=None) -> CrawlResult:
+        """自动分类爬取：全库关键词搜索，按每条记录的 flxz 自动判定 doc_type。
+
+        与 _crawl_one 的区别：
+        - 不限定 flfgCodeId，一次搜索覆盖全部类型
+        - 每条按 flxz（法律形式）判定归属，写入对应类型的子目录 / 入库 doc_type
+        - 无法识别的类型记录到 result.errors，避免静默错分
+        """
+        from src.knowledge.doc_types import doc_type_from_flxz, normalize_doc_type
+
+        out_dir = self.law_data_dir / "auto"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        sinks = self._parse_store(store)
+        do_txt = "txt" in sinks
+        do_pg = "pg" in sinks
+        if do_pg:
+            self._ensure_pg()
+
+        manifest_before = self._load_manifest(out_dir)
+        manifest = dict(manifest_before)
+        result = CrawlResult()
+
+        # 全库搜索（flfgCodeId 留空 = 全部类型）
+        docs = self._fetch_list([], keyword, limit, status_filter)
+        logger.info(f"[crawl] auto 命中 {len(docs)} 条，按 flxz 自动分类")
+
+        for item in docs:
+            doc_id = str(item.get("bbbs") or "")
+            title = _clean_title(item.get("title") or "")
+            if not title:
+                title = f"doc_{doc_id}"
+
+            # 自动分类：flxz 法律形式 -> 规范 doc_type
+            flxz = item.get("flxz") or ""
+            doc_type = doc_type_from_flxz(flxz)
+            if not doc_type:
+                result.failed += 1
+                result.errors.append(f"{title}: 无法识别法律形式 flxz={flxz!r}，跳过")
+                logger.warning(f"[crawl] auto 无法识别 flxz={flxz!r}: {title}")
+                continue
+            doc_type = normalize_doc_type(doc_type)
+
+            effective_date = item.get("sxrq") or item.get("gbrq") or ""
+            eff_pg = effective_date if _DATE_RE.match(effective_date) else None
+            from src.knowledge.doc_types import status_from_sxx
+            status = status_from_sxx(item.get("sxx"))
+
+            # 自动识别已入库：pg 按 (title, status) 精确去重，同标题不同效力
+            # 版本各自保留；txt 侧用 flk 文档 id (bbbs) 去重
+            txt_existed = doc_id in manifest_before
+            txt_skip = (not force) and txt_existed
+            pg_existed = False
+            if do_pg and self._pg_store is not None:
+                pg_existed = self._pg_store.get_document_id_by_title(title, status=status) is not None
+            pg_skip = (not force) and pg_existed
+
+            # 仅当所有启用的 sink 都已存在时整条跳过；否则各 sink 各自去重写入
+            if (not do_txt or txt_skip) and (not do_pg or pg_skip):
+                result.skipped += 1
+                continue
+
+            try:
+                text = self._fetch_document(doc_id, title)
+                if not text or len(text) < 30:
+                    raise ValueError("正文为空或过短")
+
+                if do_txt and not txt_skip:
+                    rel_path = self._save(out_dir, doc_id, title, text, effective_date)
+                    manifest[doc_id] = asdict(_ManifestEntry(
+                        id=doc_id, title=title, type=doc_type,
+                        file=rel_path, crawled_at=_now(),
+                        effective_date=effective_date, size=len(text),
+                    ))
+                    result.files.append(rel_path)
+                    if txt_existed:
+                        result.updated += 1
+                    else:
+                        result.added += 1
+                    logger.info(f"[crawl] auto[{doc_type}] txt {'更新' if txt_existed else '新增'}: {title}")
+
+                if do_pg and not pg_skip:
+                    n = self._ingest_pg(doc_type, title, text, eff_pg, force, status)
+                    result.files.append(f"pg:{title}")
+                    if pg_existed:
+                        result.updated += 1
+                    else:
+                        result.added += 1
+                    logger.info(f"[crawl] auto[{doc_type}] pg 写入 {n} 块: {title}")
+
+            except Exception as e:
+                result.failed += 1
+                result.errors.append(f"{title}: {e}")
+                logger.warning(f"[crawl] auto 失败 {title}: {e}")
 
             self._save_manifest(out_dir, manifest)
             if progress_cb:
@@ -301,13 +422,13 @@ class NpcLawCrawler:
         self._pg_store = store
         self._pg_pipeline = IngestionPipeline(store, embedder)
 
-    def _ingest_pg(self, doc_type, title, text, effective_date, force) -> int:
+    def _ingest_pg(self, doc_type, title, text, effective_date, force, status="active") -> int:
         return self._pg_pipeline.ingest_text(
             title, text, doc_type=doc_type, source=SOURCE,
-            effective_date=effective_date or None, force=force,
+            effective_date=effective_date or None, force=force, status=status,
         )
 
-    def _fetch_list(self, code_ids: list[int], keyword: str, limit: int) -> list[dict]:
+    def _fetch_list(self, code_ids: list[int], keyword: str, limit: int, status_filter: list[str] | None = None) -> list[dict]:
         collected: list[dict] = []
         page = 1
         size = 100  # 二期 API 最大 100
@@ -316,7 +437,8 @@ class NpcLawCrawler:
                 "searchRange": 1,            # 1=标题检索
                 "searchContent": keyword,    # 空=该分类全部
                 "searchType": 2,             # 2=模糊
-                "sxx": [3],                  # 3=现行有效
+                # 效力状态过滤：1=已废止 2=已修改 3=现行有效 4=尚未生效
+                "sxx": [int(x) for x in (status_filter or ["3"])],
                 "sxrq": [], "gbrq": [], "gbrqYear": [],
                 "flfgCodeId": code_ids,      # 按分类过滤（空=全部）
                 "zdjgCodeId": [],

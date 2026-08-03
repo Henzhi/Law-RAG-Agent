@@ -135,10 +135,10 @@ class TestPipelineSplit:
         assert all(c["chunk_type"] == "case" for c in chunks)
 
     def test_article_doc_types_split_by_articles(self):
-        """法律/地方法规按条文切分（chunk_type=article）"""
+        """法律/行政法规/宪法/监察法规按条文切分（chunk_type=article）"""
         from src.knowledge.ingestion.pipeline import IngestionPipeline
         text = "第一条 甲。第二条 乙。"
-        for dt in ("law", "regulation"):
+        for dt in ("law", "regulation", "constitution", "supervision"):
             chunks = IngestionPipeline._split_paragraphs(text, "doc_id", dt)
             assert len(chunks) == 2, dt
             assert all(c["chunk_type"] == "article" for c in chunks)
@@ -150,6 +150,14 @@ class TestPipelineSplit:
         chunks = IngestionPipeline._split_paragraphs(text, "doc_id", "interpretation")
         assert len(chunks) == 2
         assert all(c["chunk_type"] == "interpretation" for c in chunks)
+
+    def test_judicial_interpretation_split_by_paragraphs(self):
+        """规范 doc_type=judicial_interpretation 同样按自然段切分"""
+        from src.knowledge.ingestion.pipeline import IngestionPipeline
+        text = "一、本解释适用于……\n\n二、此前解释与本解释不一致的，以本解释为准。"
+        chunks = IngestionPipeline._split_paragraphs(text, "doc_id", "judicial_interpretation")
+        assert len(chunks) == 2
+        assert all(c["chunk_type"] == "judicial_interpretation" for c in chunks)
 
     def test_fulltext_mode(self):
         """全文模式：整篇一个 chunk，直接全文召回"""

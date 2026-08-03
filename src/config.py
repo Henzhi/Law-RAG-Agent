@@ -121,6 +121,16 @@ ADJACENT_ENABLED = os.getenv("ADJACENT_ENABLED", "true").lower() == "true"
 # "相邻但不相关"的条文污染；±1 仅保留紧邻上下文（引用仍以检索命中为主）
 ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 1)     # ±N 条
 
+# BM25 关键词检索（rank-based 混合，条件激活）
+# 设计：BM25 只用"返回顺序（排名）"参与加权 RRF 融合，不碰向量分数——
+# 与向量语义检索（按分数）逻辑互补。仅当查询含明确法律实体（法名/条款号）时激活，
+# 通用语义查询保持纯向量，零干扰。
+# 法条级评测验证：条件混合(w=3.0) 在 339 条"法名+条号/法名+关键词"查询上
+# Hit@5 75.8%→86.1%、Hit@10 82.0%→91.7%（旧语义集 100 条上持平 69%）。
+HYBRID_ENABLED = os.getenv("HYBRID_ENABLED", "true").lower() == "true"
+HYBRID_RRF_K = _safe_int("HYBRID_RRF_K", 60)                  # RRF 常数
+HYBRID_BM25_WEIGHT = _safe_float("HYBRID_BM25_WEIGHT", 3.0)   # BM25 路权重（向量=1.0）
+
 
 # ---------------------------------------------------------------------------
 # 向量索引
@@ -138,6 +148,12 @@ ADJACENT_WINDOW = _safe_int("ADJACENT_WINDOW", 1)     # ±N 条
 # 追求更高回答质量（幻觉审核 + 自动重试）时可设为 true。检索质量与噪声过滤不依赖它。
 AGENT_ENABLED = os.getenv("AGENT_ENABLED", "false").lower() == "true"
 AGENT_MAX_RETRIES = _safe_int("AGENT_MAX_RETRIES", 1)
+
+# FAQ 过期缓存后台清理周期（小时）。服务启动后周期性执行 clean_expired()
+FAQ_CLEAN_INTERVAL_HOURS = _safe_int("FAQ_CLEAN_INTERVAL_HOURS", 24)
+
+# FAQ 缓存 TTL（小时）：超过即销毁；命中缓存时自动顺延刷新（热问题续命）
+FAQ_TTL_HOURS = _safe_int("FAQ_TTL_HOURS", 1)
 
 # ---------------------------------------------------------------------------
 # pgvector

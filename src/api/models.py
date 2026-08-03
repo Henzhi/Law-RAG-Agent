@@ -86,7 +86,7 @@ class CrawlRequest(BaseModel):
     source: str = Field(default="npc", description="数据源，目前仅支持 npc(国家法律法规数据库)")
     doc_type: str = Field(
         default="law",
-        description="文档类型: law/regulation/judicial/local/constitution/supervision/all/case",
+        description="文档类型（flk 顶级分类规范值）: constitution/law/regulation/supervision/local_regulation/judicial_interpretation/all",
     )
     keyword: str = Field(default="", description="标题模糊搜索关键词（空=该类型全部）")
     limit: int = Field(default=50, ge=0, le=1000, description="最多爬取条数，0=不限")

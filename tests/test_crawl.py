@@ -23,14 +23,127 @@ from src.knowledge.crawler.npc_crawler import CrawlResult
 # ---------------------------------------------------------------------------
 
 def test_type_map_keys():
+    # flk 顶级分类规范值（v0.6 对齐国家法律法规数据库分类）
     assert set(TYPE_MAP.keys()) >= {
-        "constitution", "law", "regulation", "supervision", "judicial", "local"
+        "constitution", "law", "regulation", "supervision",
+        "judicial_interpretation", "local_regulation"
     }
     # 每个类型都有 (flfg_code_ids, subdir) 二元组
     for codes, subdir in TYPE_MAP.values():
         assert isinstance(codes, (list, tuple)) and codes
         assert all(isinstance(c, int) for c in codes)
-        assert isinstance(subdir, str) and subdir
+
+
+def test_doc_type_normalize():
+    """历史旧值归一到规范 doc_type"""
+    from src.knowledge.doc_types import normalize_doc_type
+    assert normalize_doc_type("judicial") == "judicial_interpretation"
+    assert normalize_doc_type("interpretation") == "judicial_interpretation"
+    assert normalize_doc_type("local") == "local_regulation"
+    assert normalize_doc_type("law") == "law"          # 已是规范值
+    assert normalize_doc_type("  REGULATION ") == "regulation"  # 大小写/空白容忍
+
+
+def test_status_from_sxx():
+    """flk 效力状态码映射：1废止/2已修改/3有效/4未生效"""
+    from src.knowledge.doc_types import status_from_sxx
+    assert status_from_sxx("1") == "repealed"
+    assert status_from_sxx("2") == "revised"
+    assert status_from_sxx("3") == "active"
+    assert status_from_sxx("4") == "pending"
+    assert status_from_sxx(None) == "active"     # 未知/缺失兜底为有效
+    assert status_from_sxx(1) == "repealed"      # 数字形式兼容
+
+
+def test_status_label():
+    from src.knowledge.doc_types import status_label
+    assert status_label("active") == "现行有效"
+    assert status_label("repealed") == "已废止"
+    assert status_label("pending") == "尚未生效"
+
+
+def test_doc_type_from_flxz():
+    """flk 法律形式 flxz 自动分类映射"""
+    from src.knowledge.doc_types import doc_type_from_flxz
+    assert doc_type_from_flxz("宪法") == "constitution"
+    assert doc_type_from_flxz("法律") == "law"
+    assert doc_type_from_flxz("行政法规") == "regulation"
+    assert doc_type_from_flxz("监察法规") == "supervision"
+    assert doc_type_from_flxz("地方性法规") == "local_regulation"
+    assert doc_type_from_flxz("司法解释") == "judicial_interpretation"
+    assert doc_type_from_flxz("自治条例和单行条例") == "local_regulation"
+    assert doc_type_from_flxz("经济特区法规") == "local_regulation"
+    assert doc_type_from_flxz("未知类型") is None
+    assert doc_type_from_flxz(None) is None
+    assert doc_type_from_flxz("最高人民法院 司法解释") == "judicial_interpretation"  # 包含匹配
+
+
+def test_crawl_auto_accepted():
+    """auto 自动分类模式被 crawl() 接受且不被判为不支持"""
+    from src.knowledge.crawler.npc_crawler import UNSUPPORTED_TYPES
+    assert "auto" not in UNSUPPORTED_TYPES
+
+
+def test_crawl_auto_skip_existing_by_status():
+    """自动分类 + 跳过已入库：同标题同状态跳过，不同效力版本各自入库"""
+    import tempfile
+    from unittest import mock
+    from pathlib import Path
+
+    from src.knowledge.crawler.npc_crawler import NpcLawCrawler
+
+    tmp = tempfile.mkdtemp()
+    crawler = NpcLawCrawler(law_data_dir=tmp, sleep=0)
+
+    # fake pg store：记录按 (title, status) 的去重查询，并记录写入调用
+    class FakeStore:
+        def __init__(self):
+            self.known = {}  # (title, status) -> doc_id
+            self.writes = []
+
+        def get_document_id_by_title(self, title, status=None):
+            return self.known.get((title, status or "active"))
+
+        def ensure_document(self, doc_type, title, source="", effective_date=None, status="active"):
+            key = (title, status)
+            if key not in self.known:
+                self.known[key] = f"id-{len(self.known)}"
+            return self.known[key]
+
+    class FakePipeline:
+        def __init__(self, store):
+            self.store = store
+
+        def ingest_text(self, title, text, doc_type="law", source="", effective_date=None, force=False, status="active"):
+            self.store.writes.append((title, status, doc_type))
+            self.store.known[(title, status)] = "doc-exists"
+            return 5
+
+    store = FakeStore()
+    crawler._pg_store = store
+    crawler._pg_pipeline = FakePipeline(store)
+
+    # 列表命中 3 条：同标题不同效力 + 一个完全不同标题
+    items = [
+        {"bbbs": "b1", "title": "刑法", "flxz": "法律", "sxx": "3"},   # active
+        {"bbbs": "b2", "title": "刑法", "flxz": "法律", "sxx": "1"},   # repealed（同标题不同状态）
+        {"bbbs": "b3", "title": "某司法解释", "flxz": "司法解释", "sxx": "3"},
+    ]
+    crawler._fetch_list = mock.Mock(return_value=items)
+    crawler._fetch_document = mock.Mock(return_value="某法律条文正文内容足够长满足长度要求" * 3)
+
+    # 预置：刑法 active 已入库
+    store.known[("刑法", "active")] = "doc-penal-active"
+
+    result = crawler.crawl(doc_type="auto", limit=10, store="pg")
+
+    # 刑法 active 已存在 -> skipped；刑法 repealed 新 -> added；司法解释 -> added
+    assert result.skipped == 1, f"expected skip 1, got {result.skipped}"
+    assert result.added == 2, f"expected add 2, got {result.added}"
+    writes = store.writes
+    assert ("刑法", "repealed", "law") in writes
+    assert ("某司法解释", "active", "judicial_interpretation") in writes
+    assert not any(w[0] == "刑法" and w[1] == "active" for w in writes)
 
 
 def test_unsupported_case_raises():

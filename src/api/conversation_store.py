@@ -21,12 +21,12 @@ class ConversationStore:
         try:
             with self._conn.cursor() as cur:
                 cur.execute("SELECT 1")
-        except Exception:
-            logger.warning("PG 连接已断开，尝试重连...")
+        except Exception as e:
+            logger.warning(f"PG 连接已断开，尝试重连... ({e})")
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as close_e:
+                logger.debug(f"关闭旧连接失败（可忽略）: {close_e}")
             self._conn = psycopg2.connect(self._conn_string)
             logger.info("PG 重连成功")
 
@@ -46,12 +46,12 @@ class ConversationStore:
             """)
             try:
                 cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash VARCHAR(256) NOT NULL DEFAULT ''")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"users 表迁移 password_hash 失败（可忽略）: {e}")
             try:
                 cur.execute("ALTER TABLE users ALTER COLUMN token_hash SET DEFAULT ''")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"users 表迁移 token_hash 失败（可忽略）: {e}")
             cur.execute("""
                 INSERT INTO users (id, username, password_hash, token_hash, display_name)
                 VALUES ('00000000-0000-0000-0000-000000000000', '__anonymous__', '', '', '匿名用户')
@@ -71,21 +71,21 @@ class ConversationStore:
             # 兼容旧表加列
             try:
                 cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS user_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000' REFERENCES users(id) ON DELETE CASCADE")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"conversations 表迁移 user_id 失败（可忽略）: {e}")
             try:
                 cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS messages JSONB NOT NULL DEFAULT '[]'")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"conversations 表迁移 messages 失败（可忽略）: {e}")
             try:
                 cur.execute("ALTER TABLE conversations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"conversations 表迁移 updated_at 失败（可忽略）: {e}")
             # 重建为唯一索引
             try:
                 cur.execute("DROP INDEX IF EXISTS idx_conv_user_session")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"conversations 唯一索引清理失败（可忽略）: {e}")
             cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_conv_user_session ON conversations(user_id, session_id)")
         self._conn.commit()
 

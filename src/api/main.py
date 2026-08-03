@@ -25,9 +25,36 @@ STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 logger = logging.getLogger(__name__)
 
 
+async def _faq_cleanup_loop():
+    """后台定时任务：周期性清理过期 FAQ 缓存（失败不影响主流程，下轮重试）"""
+    import asyncio
+    from src.config import PG_CONN, FAQ_CLEAN_INTERVAL_HOURS
+    from src.memory.faq_cache import FAQCache
+
+    interval = max(1, FAQ_CLEAN_INTERVAL_HOURS) * 3600
+    cache = None
+    try:
+        # clean_expired 不依赖 embedder，仅用 conn_string 即可
+        cache = FAQCache(conn_string=PG_CONN, embedder=None)
+    except Exception as e:
+        logger.warning(f"FAQ 清理任务初始化失败（pgvector 未就绪？）: {e}")
+
+    while True:
+        await asyncio.sleep(interval)
+        if cache is None:
+            continue
+        try:
+            n = cache.clean_expired()
+            if n:
+                logger.info(f"FAQ 缓存定时清理: {n} 条过期")
+        except Exception as e:
+            logger.warning(f"FAQ 缓存定时清理失败: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期：启动时预热（pgvector 连接 + 模型加载提前到启动时消耗）"""
+    import asyncio
     from src.config import AGENT_ENABLED
     if AGENT_ENABLED:
         from .dependencies import get_agent
@@ -37,7 +64,17 @@ async def lifespan(app: FastAPI):
         from .dependencies import get_engine
         get_engine()
         logger.info("RAG 引擎已预热")
-    yield
+
+    # 后台任务：FAQ 过期缓存定时清理
+    cleanup_task = asyncio.create_task(_faq_cleanup_loop())
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(

@@ -171,10 +171,10 @@ JSON Response
 uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 
 # 2. 运行冒烟测试
-uv run python scripts/smoke_test.py
+uv run python evaluation/scripts/smoke_test.py
 
 # 3. 指定自定义后端地址
-uv run python scripts/smoke_test.py --base http://192.168.1.100:8000
+uv run python evaluation/scripts/smoke_test.py --base http://192.168.1.100:8000
 ```
 
 ---

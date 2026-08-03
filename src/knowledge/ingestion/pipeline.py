@@ -80,8 +80,14 @@ class IngestionPipeline:
         doc_type: str = "law",
         source: str = "",
         effective_date: str | None = None,
+        status: str = "active",
     ) -> str:
-        """提交解析任务，返回 task_id"""
+        """提交解析任务，返回 task_id
+
+        Args:
+            status: 法律效力状态（active/repealed/revised/pending），
+                    手工上传时可标注；默认 active（现行有效）
+        """
         task_id = str(uuid.uuid4())
         self._tasks[task_id] = {
             "status": TaskStatus.PENDING,
@@ -89,10 +95,11 @@ class IngestionPipeline:
             "doc_type": doc_type,
             "source": source,
             "effective_date": effective_date,
+            "doc_status": status,  # 法律效力状态，区别于任务状态 task["status"]
             "progress": 0,
             "error": None,
         }
-        logger.info(f"解析任务已提交: task_id={task_id[:8]}..., file={file_path}")
+        logger.info(f"解析任务已提交: task_id={task_id[:8]}..., file={file_path}, status={status}")
         return task_id
 
     def get_status(self, task_id: str) -> dict | None:
@@ -122,12 +129,13 @@ class IngestionPipeline:
             if not cleaned or len(cleaned) < 20:
                 raise ValueError(f"解析后文本过短（{len(cleaned)}字符），可能为空白或扫描件")
 
-            # 3. 创建文档记录
+            # 3. 创建文档记录（透传效力状态）
             doc_id = self._store.ensure_document(
                 doc_type=task["doc_type"],
                 title=task.get("title") or file_name.replace(ext, ""),
                 source=task.get("source", ""),
                 effective_date=task.get("effective_date"),
+                status=task.get("doc_status", "active"),
             )
 
             # 4. 分块 — 以段落为边界，500 字一段
@@ -224,8 +232,13 @@ class IngestionPipeline:
                 }
 
             map_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(map_path, "w", encoding="utf-8") as f:
+            # 原子写入：先写临时文件再 rename，避免并发进程读到半写状态
+            # （多进程并发入库时 JSON 会损坏，表现为 "Extra data" JSONDecodeError）
+            import os as _os
+            tmp_path = map_path.with_suffix(".json.tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 _json.dump(existing, f, ensure_ascii=False, indent=2)
+            _os.replace(tmp_path, map_path)
             logger.info(f"article_map 已更新: {map_path} ({len(existing)} 部法律)")
         except Exception as e:
             logger.warning(f"article_map 更新失败（相邻扩展将不生效）: {e}")
@@ -270,6 +283,7 @@ class IngestionPipeline:
         source: str = "",
         effective_date: str | None = None,
         force: bool = False,
+        status: str = "active",
     ) -> int:
         """直接入库纯文本（无需落盘文件）。
 
@@ -282,6 +296,7 @@ class IngestionPipeline:
             source         : 来源标识（如 flk.npc.gov.cn）
             effective_date : 生效日期（ISO 字符串或 None）
             force          : 已存在时是否删除旧文档后重建
+            status         : 效力状态（active/repealed/revised/pending）
 
         Returns:
             0  -> 已存在且非强制（跳过）
@@ -293,7 +308,7 @@ class IngestionPipeline:
         if not cleaned or len(cleaned) < 20:
             raise ValueError("清洗后文本过短")
 
-        existing = self._store.get_document_id_by_title(title)
+        existing = self._store.get_document_id_by_title(title, status=status)
         if existing and not force:
             logger.info(f"[ingest] 跳过(已存在): {title}")
             return 0
@@ -302,7 +317,8 @@ class IngestionPipeline:
             self._store.delete_document(existing)
 
         doc_id = self._store.ensure_document(
-            doc_type=doc_type, title=title, source=source, effective_date=effective_date,
+            doc_type=doc_type, title=title, source=source,
+            effective_date=effective_date, status=status,
         )
         chunks = self._split_paragraphs(cleaned, doc_id, doc_type=doc_type, title=title)
         if not chunks:
@@ -314,6 +330,7 @@ class IngestionPipeline:
             for c, emb in zip(batch, embeddings):
                 c["embedding"] = emb
             self._store.insert_chunks(batch, embedding_model=self._embedder.model)
+        self._rebuild_article_map(chunks)
         logger.info(f"[ingest] 写入完成: {title} → {len(chunks)} 块")
         return len(chunks)
 
@@ -327,12 +344,12 @@ class IngestionPipeline:
     ) -> list[dict]:
         """按文档类型差异化切分文本为块
 
-        - 条文体（law / regulation）：以「第X条」为天然边界，每个条文
-          独立成块（核心修复：此前按段落切分，条文间无空行时多个
-          「第X条」会被糅进同一块）。超长条文再按句号拆分，且每个续块
-          都保留条号前缀以便引用追溯。
-        - 非条文体（interpretation / case）：按自然段切分（叙事文/解释
-          文无「第X条」结构，不做条文/句子硬拆分，避免切碎语义脉络）。
+        - 条文体（law / regulation / constitution / supervision）：以「第X条」
+          为天然边界，每个条文独立成块（核心修复：此前按段落切分，条文间
+          无空行时多个「第X条」会被糅进同一块）。超长条文再按句号拆分，
+          且每个续块都保留条号前缀以便引用追溯。
+        - 非条文体（judicial_interpretation / case）：按自然段切分（叙事文/
+          解释文无「第X条」结构，不做条文/句子硬拆分，避免切碎语义脉络）。
         - 全文模式：doc_type 位于 FULLTEXT_DOC_TYPES 时，整篇作为一个
           chunk（直接全文召回，不切分）；仅当整篇超长时才保底按句号拆分。
         每个块会带上 law_name（文档标题）与 article_range（解析出的条号），
@@ -341,10 +358,10 @@ class IngestionPipeline:
         # 全文模式：整篇一个 chunk，直接全文召回
         if doc_type in FULLTEXT_DOC_TYPES:
             chunks = _split_fulltext(text, doc_id, doc_type, max_chars=max_chars)
-        # 条文体：按「第X条」切分
-        elif doc_type in ("law", "regulation"):
+        # 条文体：按「第X条」切分（法律/行政法规/宪法/监察法规）
+        elif doc_type in ("law", "regulation", "constitution", "supervision"):
             chunks = _split_article_paragraphs(text, doc_id, doc_type, max_chars=max_chars)
-        # 非条文体（interpretation / case）：按自然段切分
+        # 非条文体（judicial_interpretation / case）：按自然段切分
         else:
             chunks = _split_paragraph_docs(text, doc_id, doc_type, max_chars=max_chars)
 

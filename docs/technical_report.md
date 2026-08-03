@@ -418,10 +418,10 @@ LawDocument
 | FAISS 索引 (3753 文档) | `data/vector_store/` |
 | RAG 引擎 | `src/rag/engine.py` |
 | LangGraph Agent | `src/agents/graph.py` |
-| 测试数据集 (131 条) | `data/eval_dataset.json` |
+| 测试数据集 (131 条) | `evaluation/data/eval_dataset.json` |
 | 检索评测 | `docs/retrieval_eval.md` |
 | 单元测试 (174 用例) | `tests/` |
-| 冒烟测试 | `scripts/smoke_test.py` |
+| 冒烟测试 | `evaluation/scripts/smoke_test.py` |
 | 技术报告 | `docs/technical_report.md`（本文档） |
 | Docker 部署 | `docker-compose.yml` + `Dockerfile` |
 | CI/CD | `.github/workflows/ci.yml` |

@@ -2,10 +2,12 @@
   <div class="auth-page">
     <div class="auth-card">
       <div class="logo">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-        <h1>Law-RAG-Agent</h1>
+        <div class="logo-box">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </div>
+        <h1>法智问答</h1>
       </div>
-      <p class="subtitle">基于本地 LLM 的法律法规智能问答系统</p>
+      <p class="subtitle">法律法规智能问答系统</p>
 
       <form @submit.prevent="submit">
         <label for="username">用户名</label>
@@ -94,40 +96,52 @@ async function submit() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, var(--color-bg) 0%, var(--color-primary-light) 100%);
+  background: linear-gradient(160deg, var(--color-surface) 0%, var(--color-primary-light) 100%);
 }
 .auth-card {
   background: var(--color-surface);
   padding: 40px 36px;
-  border-radius: var(--radius-lg);
-  box-shadow: 0 4px 24px rgba(124, 58, 237, 0.12);
+  border-radius: 16px;
+  box-shadow: 0 8px 40px rgba(79, 70, 229, 0.08);
   width: 380px;
   max-width: 90vw;
+  border: 1px solid var(--color-border);
 }
 .logo {
   text-align: center;
   margin-bottom: 8px;
 }
-.logo svg {
-  width: 40px;
-  height: 40px;
+.logo-box {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 12px;
+  border-radius: 14px;
+  background: var(--color-primary-light);
   color: var(--color-primary);
-  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
-.logo h1 { font-size: 22px; color: var(--color-primary-dark); }
+.logo-box svg { width: 28px; height: 28px; }
+.logo h1 { font-size: 22px; color: var(--color-text); font-weight: 700; }
 .subtitle { text-align: center; color: var(--color-text-muted); font-size: 13px; margin-bottom: 28px; }
-label { display: block; font-size: 13px; color: var(--color-text-muted); margin: 14px 0 4px; }
+label { display: block; font-size: 13px; color: var(--color-text-secondary); margin: 14px 0 6px; }
 input[type="text"], input[type="password"] {
   width: 100%;
-  padding: 10px 12px;
+  padding: 11px 12px;
   border: 1px solid var(--color-border);
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 14px;
-  font-family: var(--font-body);
   outline: none;
-  transition: border-color var(--transition);
+  transition: border-color var(--transition), box-shadow var(--transition);
+  background: var(--color-sidebar-bg);
+  color: var(--color-text);
 }
-input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.12); }
+input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.1);
+  background: var(--color-surface);
+}
 .pw-wrap { position: relative; }
 .pw-wrap input { padding-right: 40px; }
 .pw-toggle {
@@ -145,20 +159,20 @@ input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(124
 .error { color: var(--color-error); font-size: 13px; margin-top: 10px; text-align: center; min-height: 20px; }
 .btn-primary {
   width: 100%;
-  padding: 11px;
+  padding: 12px;
   background: var(--color-primary);
   color: #fff;
   border: none;
-  border-radius: 6px;
+  border-radius: 8px;
   font-size: 15px;
-  font-family: var(--font-body);
+  font-weight: 500;
   cursor: pointer;
   margin-top: 20px;
   transition: background var(--transition);
 }
-.btn-primary:hover:not(:disabled) { background: var(--color-primary-dark); }
+.btn-primary:hover:not(:disabled) { background: var(--color-primary-hover); }
 .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
-.switch { text-align: center; margin-top: 14px; font-size: 13px; color: var(--color-text-muted); }
-.switch a { color: var(--color-primary); cursor: pointer; text-decoration: none; }
+.switch { text-align: center; margin-top: 16px; font-size: 13px; color: var(--color-text-muted); }
+.switch a { color: var(--color-primary); cursor: pointer; text-decoration: none; font-weight: 500; }
 .switch a:hover { text-decoration: underline; }
 </style>

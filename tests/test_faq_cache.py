@@ -16,9 +16,9 @@ class TestImports:
         assert FAQCache is not None
 
     def test_import_constants(self):
-        from src.memory.faq_cache import HIT_THRESHOLD, DEFAULT_TTL_DAYS
+        from src.memory.faq_cache import HIT_THRESHOLD, DEFAULT_TTL_HOURS
         assert 0 <= HIT_THRESHOLD <= 1
-        assert DEFAULT_TTL_DAYS > 0
+        assert DEFAULT_TTL_HOURS > 0
 
 
 class TestCacheLogic:
@@ -59,3 +59,21 @@ class TestCacheLogic:
         # 太高 (>0.98) 会导致缓存几乎无法命中
         # 太低 (<0.90) 会导致不同问题被错误合并
         assert 0.90 <= HIT_THRESHOLD <= 0.98
+
+    def test_check_refreshes_ttl_sql(self):
+        """命中后 check() 的 UPDATE 必须同时刷新 hit_count 与 expires_at（续期）"""
+        import inspect
+        from src.memory.faq_cache import FAQCache
+        source = inspect.getsource(FAQCache.check)
+        # 命中后刷新 TTL：expires_at 顺延 + hit_count 累加
+        assert "hit_count = hit_count + 1" in source
+        assert "expires_at = NOW() + INTERVAL" in source
+        assert "WHERE id = %s" in source
+
+    def test_store_uses_hours_ttl(self):
+        """store() 的写入 SQL 使用小时级 INTERVAL（而非天级）"""
+        import inspect
+        from src.memory.faq_cache import FAQCache
+        source = inspect.getsource(FAQCache.store)
+        assert "INTERVAL '%s hours'" in source
+        assert "ttl_hours" in source

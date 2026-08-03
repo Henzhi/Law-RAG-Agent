@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
 
 from .dependencies import get_engine, get_agent, get_llm, _create_embedder
@@ -188,8 +188,16 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _is_disconnected(request: Request) -> bool:
+    """检测 SSE 客户端是否已断开（fastapi 提供 is_disconnected）"""
+    try:
+        return await request.is_disconnected()
+    except Exception:
+        return False
+
+
 @router.post("/chat/stream")
-async def chat_stream(req: ChatRequest):
+async def chat_stream(req: ChatRequest, request: Request):
     t_start = time.perf_counter()
 
     # 输入安全过滤（Prompt 注入 + 敏感内容检测）
@@ -209,9 +217,12 @@ async def chat_stream(req: ChatRequest):
 
         safe_history = _sanitize_history(req.history)
 
-        def generate():
+        async def generate():
             try:
                 for event in agent.stream(safe_query, history=safe_history):
+                    if await _is_disconnected(request):
+                        perf_logger.info(f"[stream] mode=agent 客户端断开，终止生成 elapsed={time.perf_counter()-t_start:.0f}s")
+                        return
                     yield _sse(event)
             except Exception as e:
                 elapsed = (time.perf_counter() - t_start) * 1000
@@ -230,9 +241,11 @@ async def chat_stream(req: ChatRequest):
     engine = get_engine()
     history = _dicts_to_messages(_sanitize_history(req.history))
 
-    def generate():
+    async def generate():
         try:
             yield _sse({"type": "thinking", "content": "正在分析问题..."})
+            if await _is_disconnected(request):
+                return
             casual = not needs_retrieval(req.query, engine.llm)
             yield _sse({"type": "thinking", "content": f"意图识别: {'闲聊 → 直接回复' if casual else '法律问题 → 检索法条'}"})
 
@@ -240,6 +253,9 @@ async def chat_stream(req: ChatRequest):
                 yield _sse({"type": "meta", "sources": [], "is_casual": True})
                 yield _sse({"type": "thinking", "content": "直接回复，无需检索"})
                 for token in engine.llm.chat_stream(req.query, history=history):
+                    if await _is_disconnected(request):
+                        perf_logger.info("[stream] 客户端断开，终止闲聊生成")
+                        return
                     yield _sse({"type": "token", "content": token})
                 yield _sse({"type": "thinking", "content": "完成"})
                 return
@@ -267,6 +283,9 @@ async def chat_stream(req: ChatRequest):
             yield _sse({"type": "meta", "sources": sources, "is_casual": False})
             yield _sse({"type": "thinking", "content": "模型正在生成回答..."})
             for token in engine.llm.chat_stream(prompt, history=history):
+                if await _is_disconnected(request):
+                    perf_logger.info("[stream] 客户端断开，终止 RAG 生成")
+                    return
                 yield _sse({"type": "token", "content": token})
 
         except Exception as e:
@@ -418,14 +437,25 @@ def _get_ingestion_pipeline():
     return _ingestion_pipeline
 
 
+_UPLOAD_ALLOWED_STATUS = {"active", "repealed", "revised", "pending"}
+
+
 @router.post("/knowledge/upload")
 async def upload_document(
     file: UploadFile = File(...),
     doc_type: str = Form("law"),
     source: str = Form(""),
     effective_date: str = Form(""),
+    status: str = Form("active"),
     _user: str = Depends(require_registered_user),
 ):
+    # 归一到规范 doc_type（兼容前端旧别名 interpretation/local/judicial）
+    from src.knowledge.doc_types import normalize_doc_type
+    doc_type = normalize_doc_type(doc_type)
+
+    # 校验效力状态（防止伪造非法值）
+    if status not in _UPLOAD_ALLOWED_STATUS:
+        raise HTTPException(400, f"无效的效力状态: {status}，可选 {sorted(_UPLOAD_ALLOWED_STATUS)}")
     """上传法律文档（PDF/DOCX/TXT）—— 需登录
 
     文件被保存到临时目录后由解析管道处理，
@@ -452,13 +482,14 @@ async def upload_document(
         tmp.write(content)
         tmp_path = tmp.name
 
-    # 提交解析任务
+    # 提交解析任务（透传效力状态）
     pipeline = _get_ingestion_pipeline()
     task_id = pipeline.submit(
         file_path=tmp_path,
         doc_type=doc_type,
         source=source,
         effective_date=effective_date or None,
+        status=status,
     )
 
     # 后台异步处理 — to_thread 避免同步解析阻塞事件循环
@@ -484,8 +515,8 @@ def _run_ingestion_sync(pipeline, task_id: str, tmp_path: str):
     finally:
         try:
             os.unlink(tmp_path)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"临时文件清理失败（可忽略）: {tmp_path}: {e}")
 
 
 @router.get("/knowledge/status/{task_id}")
@@ -512,14 +543,17 @@ def _get_store():
 
 
 @router.get("/knowledge/documents")
-def list_knowledge_documents(doc_type: str | None = None):
+def list_knowledge_documents(doc_type: str | None = None, status: str | None = None):
     """列出知识库中的所有文档
 
     Query:
-        doc_type: 按类型过滤 (law/interpretation/case/regulation)，不传则返回全部
+        doc_type: 按类型过滤（flk 顶级分类规范值），不传则返回全部
+        status: 按效力状态过滤（active/repealed/revised/pending，可逗号组合），
+                不传则返回全部（含废止/未生效，便于辨别法律效力）
     """
+    from src.knowledge.doc_types import normalize_doc_type
     store = _get_store()
-    docs = store.list_documents(doc_type=doc_type)
+    docs = store.list_documents(doc_type=normalize_doc_type(doc_type), status=status)
     return {"documents": docs, "total": len(docs)}
 
 
@@ -530,19 +564,27 @@ def delete_knowledge_document(doc_id: str, _user: str = Depends(require_register
     ok = store.delete_document(doc_id)
     if not ok:
         raise HTTPException(404, "文档不存在")
-    # 删除后重建索引
-    store.reindex()
+    # 注：HNSW 对删除是软处理（标记删除），无需全量 REINDEX（锁表）；
+    # 大量删除后的索引整理由 rebuild 接口显式触发
     return {"ok": True, "message": f"文档 {doc_id[:8]}... 已删除"}
 
 
 @router.get("/knowledge/documents/{doc_id}/chunks")
-def get_document_chunks(doc_id: str):
-    """获取文档的所有文本块"""
+def get_document_chunks(doc_id: str, limit: int = 50, offset: int = 0):
+    """获取文档的文本块（分页，默认每页 50 条）
+
+    Query:
+        limit: 每页条数（默认 50，最大 500）
+        offset: 跳过条数（配合前端滚动懒加载）
+    """
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     store = _get_store()
-    chunks = store.get_document_chunks(doc_id)
-    if not chunks:
+    total = store.count_document_chunks(doc_id)
+    if total == 0:
         raise HTTPException(404, "文档不存在或无内容")
-    return {"doc_id": doc_id, "chunks": chunks, "total": len(chunks)}
+    chunks = store.get_document_chunks(doc_id, limit=limit, offset=offset)
+    return {"doc_id": doc_id, "chunks": chunks, "total": total, "limit": limit, "offset": offset}
 
 
 # ----------------------------------------------------------------------------
@@ -579,6 +621,7 @@ def _run_crawl(task_id: str, req: CrawlRequest) -> None:
     from dataclasses import asdict
 
     from src.knowledge.crawler import NpcLawCrawler
+    from src.knowledge.doc_types import normalize_doc_type
 
     state = _crawl_tasks.get(task_id)
     if state is None:
@@ -594,7 +637,7 @@ def _run_crawl(task_id: str, req: CrawlRequest) -> None:
             }
 
         res = crawler.crawl(
-            doc_type=req.doc_type, keyword=req.keyword, limit=req.limit,
+            doc_type=normalize_doc_type(req.doc_type), keyword=req.keyword, limit=req.limit,
             force=req.force, subdir=req.subdir, store=req.store,
             progress_cb=_on_progress,
         )
@@ -657,13 +700,13 @@ async def get_crawl_status(task_id: str):
 
 @router.get("/crawl/types")
 async def list_crawl_types():
-    """列出支持的爬取类型与说明"""
+    """列出支持的爬取类型与说明（分类对齐 flk 国家法律法规数据库顶级分类）"""
+    from src.knowledge.doc_types import crawlable_types
+    types = crawlable_types()
+    types["auto"] = "自动分类（按关键词搜索，逐条按 flxz 自动判定归属）"
+    types["all"] = "全部（依次爬取上述类型）"
     return {
         "source": "npc",
-        "types": {
-            "law": "法律法规", "regulation": "行政法规", "judicial": "司法解释",
-            "local": "地方性法规", "constitution": "宪法", "supervision": "监察法规",
-            "all": "全部（依次爬取上述类型）",
-        },
+        "types": types,
         "unsupported": ["case（案例 / 裁判文书，该数据源不提供）"],
     }

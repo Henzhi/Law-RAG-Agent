@@ -17,6 +17,7 @@ from src.config import (
     AGENT_MAX_RETRIES,
     PG_CONN,
     ADJACENT_ENABLED, ADJACENT_WINDOW,
+    HYBRID_ENABLED, HYBRID_RRF_K, HYBRID_BM25_WEIGHT,
 )
 from src.llm.adapter import LLMAdapter, EmbeddingAdapter
 from src.llm.factory import create_llm_backend
@@ -94,11 +95,28 @@ def _create_retriever(embedder):
         retriever = RerankRetriever(base_retriever=retriever, reranker=reranker, recall_k=RERANK_RECALL_K, top_k=RERANK_TOP_K)
         logger.info(f"Reranker 就绪: 粗排{RERANK_RECALL_K} → 精排{RERANK_TOP_K}")
 
-    # 相邻扩展（最外层；article_map 缺失时自动降级为空转）
+    # 相邻扩展（article_map 缺失时自动降级为空转）
     if ADJACENT_ENABLED:
         from src.rag.adjacent_expander import AdjacentExpander
         map_path = Path(__file__).resolve().parents[2] / "data" / "vector_store" / "article_map.json"
         retriever = AdjacentExpander(base_retriever=retriever, article_map_path=map_path, window=ADJACENT_WINDOW)
+
+    # BM25 关键词混合（rank-based 条件激活）：仅法名/条款查询参与，BM25 索引懒加载
+    if HYBRID_ENABLED:
+        from src.rag.bm25_retriever import Bm25Retriever
+        from src.rag.hybrid_retriever import HybridRetriever
+        bm25 = Bm25Retriever(store)
+        retriever = HybridRetriever(
+            base_retriever=retriever,
+            bm25_retriever=bm25,
+            rrf_k=HYBRID_RRF_K,
+            bm25_weight=HYBRID_BM25_WEIGHT,
+        )
+        logger.info(f"BM25 条件混合就绪: RRF k={HYBRID_RRF_K}, bm25_w={HYBRID_BM25_WEIGHT} (懒加载)")
+
+    # 条款号精确路由（最外层）：对"法名+第X条"查询做精确置顶，弥补纯向量对条款号查询的失配
+    from src.rag.article_router import ArticleRouter
+    retriever = ArticleRouter(base_retriever=retriever, store=store)
 
     return retriever
 

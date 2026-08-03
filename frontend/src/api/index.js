@@ -34,12 +34,13 @@ export const deleteConversation = (sessionId) =>
   fetch(`${BASE}/conversations/${sessionId}`, { method: 'DELETE', headers: authHeaders() }).then(r => { if (!r.ok) throw new Error('删除失败') })
 
 // Knowledge
-export const uploadDocument = async (file, docType, source, effectiveDate) => {
+export const uploadDocument = async (file, docType, source, effectiveDate, status = 'active') => {
   const fd = new FormData()
   fd.append('file', file)
   fd.append('doc_type', docType)
   fd.append('source', source)
   fd.append('effective_date', effectiveDate)
+  fd.append('status', status)
   const resp = await fetch(`${BASE}/knowledge/upload`, { method: 'POST', headers: { Authorization: authHeaders().Authorization }, body: fd })
   if (!resp.ok) throw new Error('上传失败')
   return resp.json()
@@ -48,16 +49,19 @@ export const uploadDocument = async (file, docType, source, effectiveDate) => {
 export const getIngestionStatus = (taskId) =>
   fetch(`${BASE}/knowledge/status/${taskId}`, { headers: authHeaders() }).then(handleError)
 
-export const listDocuments = (docType) => {
-  const q = docType ? `?doc_type=${docType}` : ''
-  return fetch(`${BASE}/knowledge/documents${q}`, { headers: authHeaders() }).then(handleError)
+export const listDocuments = (docType, status) => {
+  const params = new URLSearchParams()
+  if (docType) params.set('doc_type', docType)
+  if (status) params.set('status', status)
+  const qs = params.toString()
+  return fetch(`${BASE}/knowledge/documents${qs ? `?${qs}` : ''}`, { headers: authHeaders() }).then(handleError)
 }
 
 export const deleteDocument = (docId) =>
   fetch(`${BASE}/knowledge/documents/${docId}`, { method: 'DELETE', headers: authHeaders() }).then(r => { if (!r.ok) throw new Error('删除失败'); return r.json() })
 
-export const getDocumentChunks = (docId) =>
-  fetch(`${BASE}/knowledge/documents/${docId}/chunks`, { headers: authHeaders() }).then(handleError)
+export const getDocumentChunks = (docId, limit = 50, offset = 0) =>
+  fetch(`${BASE}/knowledge/documents/${docId}/chunks?limit=${limit}&offset=${offset}`, { headers: authHeaders() }).then(handleError)
 
 // Chat Stream
 export async function* streamChat(query, history, sessionId) {

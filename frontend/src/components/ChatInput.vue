@@ -10,10 +10,10 @@
         @input="autoResize"
         ref="textareaRef"
       ></textarea>
-      <button v-if="disabled" class="btn-sending">
+      <button v-if="disabled" class="btn-sending" title="停止生成中">
         <span class="dot-pulse"></span>
       </button>
-      <button v-else class="btn-send" @click="doSend" :disabled="!text.trim()">
+      <button v-else class="btn-send" @click="doSend" :disabled="!text.trim()" title="发送">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="18" height="18"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
       </button>
     </div>
@@ -40,7 +40,7 @@ function autoResize() {
   const el = textareaRef.value
   if (!el) return
   el.style.height = 'auto'
-  el.style.height = Math.min(el.scrollHeight, 150) + 'px'
+  el.style.height = Math.min(el.scrollHeight, 160) + 'px'
 }
 
 function doSend() {
@@ -56,10 +56,10 @@ function doSend() {
 
 <style scoped>
 .input-area {
-  max-width: 900px;
+  max-width: 860px;
   margin: 0 auto;
   width: 100%;
-  padding: 0 20px 16px;
+  padding: 8px 20px 4px;
   flex-shrink: 0;
 }
 
@@ -69,13 +69,14 @@ function doSend() {
   align-items: flex-end;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
-  border-radius: 16px;
-  padding: 8px 8px 8px 18px;
+  border-radius: 14px;
+  padding: 10px 10px 10px 18px;
+  box-shadow: var(--shadow-card);
   transition: border-color 150ms ease, box-shadow 150ms ease, opacity 200ms ease;
 }
 .input-row:focus-within {
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.1);
+  box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 .input-row.disabled {
   opacity: 0.6;
@@ -88,11 +89,10 @@ textarea {
   outline: none;
   background: transparent;
   font-size: 15px;
-  font-family: var(--font-body);
   line-height: 1.5;
   resize: none;
   padding: 6px 0;
-  max-height: 150px;
+  max-height: 160px;
   color: var(--color-text);
   cursor: text;
 }
@@ -104,8 +104,8 @@ textarea::placeholder { color: var(--color-text-muted); }
 
 .btn-send {
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
   border: none;
   background: var(--color-primary);
@@ -116,15 +116,15 @@ textarea::placeholder { color: var(--color-text-muted); }
   justify-content: center;
   transition: all 150ms ease;
 }
-.btn-send:hover:not(:disabled) { background: var(--color-primary-dark); transform: scale(1.05); }
-.btn-send:disabled { background: #D1D5DB; cursor: not-allowed; }
+.btn-send:hover:not(:disabled) { background: var(--color-primary-hover); transform: scale(1.05); }
+.btn-send:disabled { background: var(--color-border); color: var(--color-text-muted); cursor: not-allowed; }
 
 .btn-sending {
   flex-shrink: 0;
-  width: 38px;
-  height: 38px;
+  width: 36px;
+  height: 36px;
   border-radius: 50%;
-  border: 2px solid var(--color-primary);
+  border: none;
   background: var(--color-primary-light);
   cursor: default;
   display: flex;

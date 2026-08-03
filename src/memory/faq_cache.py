@@ -26,8 +26,12 @@ logger = logging.getLogger(__name__)
 # 命中阈值：余弦相似度 >= 此值时视为命中
 HIT_THRESHOLD = 0.95
 
-# TTL：默认 7 天
-DEFAULT_TTL_DAYS = 7
+# TTL：默认 1 小时（超过即销毁；命中会刷新续期）。可通过 FAQ_TTL_HOURS 覆盖
+try:
+    from src.config import FAQ_TTL_HOURS as _FAQ_TTL_HOURS
+    DEFAULT_TTL_HOURS = _FAQ_TTL_HOURS
+except Exception:
+    DEFAULT_TTL_HOURS = 1
 
 
 class FAQCache:
@@ -58,8 +62,8 @@ class FAQCache:
             logger.warning("FAQ缓存: PG 连接断开，重连中...")
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as close_e:
+                logger.debug(f"FAQ缓存 关闭旧连接失败（可忽略）: {close_e}")
             self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
 
@@ -108,12 +112,14 @@ class FAQCache:
         except (_json.JSONDecodeError, TypeError):
             sources = []
 
-        # 更新命中次数 — 直接用首次查询取出的 id，避免重复向量近邻子查询
-        # （原实现一次命中 = 2 次 HNSW 检索，且并发下可能加错条目）
+        # 命中即续期：hit_count + 1，同时把 TTL 顺延刷新
+        # （热问题自动续命，冷问题自然过期销毁）
         with self._conn.cursor() as cur:
             cur.execute(
-                "UPDATE faq_cache SET hit_count = hit_count + 1 WHERE id = %s",
-                (faq_id,),
+                "UPDATE faq_cache SET hit_count = hit_count + 1, "
+                "expires_at = NOW() + INTERVAL '%s hours' "
+                "WHERE id = %s",
+                (DEFAULT_TTL_HOURS, faq_id),
             )
         self._conn.commit()
 
@@ -135,7 +141,7 @@ class FAQCache:
         sources: list[dict] | None = None,
         related_laws: list[str] | None = None,
         confidence: float = 1.0,
-        ttl_days: int = DEFAULT_TTL_DAYS,
+        ttl_hours: int = DEFAULT_TTL_HOURS,
     ):
         """写入缓存
 
@@ -145,7 +151,7 @@ class FAQCache:
             sources: 引用来源
             related_laws: 关联法律 ID 列表
             confidence: 回答置信度（<0.8 不缓存）
-            ttl_days: 过期天数
+            ttl_hours: 过期小时数（默认 1，命中后刷新续期）
         """
         if confidence < 0.8:
             return
@@ -160,7 +166,7 @@ class FAQCache:
                 "(question, question_embed, answer, sources, related_laws, "
                 " confidence, hit_count, status, expires_at) "
                 "VALUES (%s, %s::halfvec, %s, %s, %s, %s, 1, 'active', "
-                " NOW() + INTERVAL '%s days')",
+                " NOW() + INTERVAL '%s hours')",
                 (
                     question,
                     vec,
@@ -168,7 +174,7 @@ class FAQCache:
                     json.dumps(sources or [], ensure_ascii=False),
                     related_laws or [],
                     confidence,
-                    ttl_days,
+                    ttl_hours,
                 ),
             )
         self._conn.commit()

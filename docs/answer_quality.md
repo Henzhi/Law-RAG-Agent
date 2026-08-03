@@ -1,7 +1,7 @@
 # 回答质量评测报告
 
 **评测时间**: 2026-07-20 21:51:32
-**数据来源**: data/eval_dataset.json (131 条)
+**数据来源**: evaluation/data/eval_dataset.json (131 条)
 
 ## 一、规则层评分（全量）
 

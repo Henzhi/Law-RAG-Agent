@@ -46,3 +46,43 @@ class TestRetriever:
         assert doc.chapter == "第一编 总则"
         assert doc.article_range == "第一条"
         assert doc.citation == "中华人民共和国刑法 · 第一条"
+
+
+class TestChunkPagination:
+    """get_document_chunks 分页：验证 LIMIT/OFFSET 拼接与参数传递（不连真实 PG）"""
+
+    def _make_store_with_mock(self, fetched):
+        import types
+        from unittest.mock import MagicMock, patch
+        from src.knowledge.pgvector_store import PgvectorStore
+
+        store = PgvectorStore.__new__(PgvectorStore)
+        store._conn = MagicMock()
+        store._ensure_connection = MagicMock()
+
+        cur = MagicMock()
+        cur.fetchall.return_value = fetched
+        store._conn.cursor.return_value.__enter__.return_value = cur
+        return store, cur
+
+    def test_paginated_query_includes_limit_offset(self):
+        store, cur = self._make_store_with_mock([("id1", "article", "第一条...", "bge-m3", None, "2026-01-01")])
+        rows = store.get_document_chunks("doc-1", limit=50, offset=100)
+        # SQL 必须包含 LIMIT/OFFSET，且参数按 (doc_id, limit, offset) 顺序传入
+        sql, params = cur.execute.call_args[0]
+        assert "LIMIT" in sql and "OFFSET" in sql
+        assert params == ("doc-1", 50, 100)
+        assert len(rows) == 1
+
+    def test_non_paginated_has_no_limit(self):
+        store, cur = self._make_store_with_mock([])
+        rows = store.get_document_chunks("doc-1")
+        sql, params = cur.execute.call_args[0]
+        assert "LIMIT" not in sql and "OFFSET" not in sql
+        assert params == ("doc-1",)
+        assert rows == []
+
+    def test_count_document_chunks(self):
+        store, cur = self._make_store_with_mock([])
+        cur.fetchone.return_value = (1323,)
+        assert store.count_document_chunks("doc-1") == 1323

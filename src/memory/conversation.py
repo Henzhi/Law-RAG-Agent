@@ -72,8 +72,8 @@ class ConversationMemoryManager:
             logger.warning("记忆管理器: PG 连接已断开，尝试重连...")
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as close_e:
+                logger.debug(f"记忆管理器 关闭旧连接失败（可忽略）: {close_e}")
             self._conn = psycopg2.connect(self._conn_string)
             register_vector(self._conn)
             logger.info("记忆管理器: PG 重连成功")

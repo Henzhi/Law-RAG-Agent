@@ -8,7 +8,7 @@
 
 | 层次 | 技术 |
 |:---|:---|
-| LLM | Ollama + Qwen2.5:7b |
+| LLM | Ollama + Qwen2.5:3b（流式） |
 | Embedding | Ollama + bge-m3 (1024d) |
 | Reranker | bge-reranker-v2-m3 (Cross-Encoder) |
 | 向量索引 | pgvector (halfvec + HNSW) |
@@ -25,46 +25,47 @@
 ```
 Law-RAG-Agent/
 ├── src/
-│   ├── chunking/              # 法律文档解析 + 法条级切分
-│   │   ├── parser.py           # 层次解析 (编→章→节→条) + 中文数字转换
-│   │   └── chunker.py          # 智能切分 + 章级摘要
-│   ├── embedding/             # 向量化
-│   │   ├── embedder.py         # Ollama bge-m3 封装
-│   ├── llm/                   # LLM 客户端
-│   │   └── client.py           # Ollama Qwen2.5:7b 封装 + 流式
-│   ├── rag/                   # RAG 引擎
-│   │   ├── engine.py           # 问答管线 + Prompt 构建
-│   │   ├── retriever.py        # 检索器抽象 (pgvector)
-│   │   ├── reranker.py         # Cross-Encoder 精排
-│   │   └── adjacent_expander.py# 相邻条文上下文扩展
-│   ├── agents/                # LangGraph Agent
-│   │   ├── graph.py            # 6 节点状态图
-│   │   └── tools.py            # 工具定义
-│   ├── api/                   # FastAPI
-│   │   ├── main.py             # 应用入口 + 日志配置
-│   │   ├── routes.py           # API 路由 + 性能日志
-│   │   ├── models.py           # Pydantic 模型
-│   │   ├── auth.py             # JWT 认证
-│   │   └── dependencies.py     # 依赖注入 (检索链)
+│   ├── knowledge/             # 知识处理（解析→切分→入库）
+│   │   ├── ingestion/          # 切分管线（按「第X条」/按段落差异化）
+│   │   │   └── pipeline.py     # 分类 + 切分 + 入库
+│   │   ├── pgvector_store.py   # pgvector 存储/检索 (halfvec)
+│   │   ├── doc_types.py        # 文档分类规范层 (doc_type/status)
+│   │   ├── crawler/            # 法律爬虫（自动分类 + 增量去重）
+│   │   └── ...
+│   ├── embedding/             # 向量化 (Ollama bge-m3)
+│   ├── llm/                   # LLM 客户端 (Ollama Qwen2.5:3b + 流式)
+│   ├── rag/                   # RAG 引擎（检索链：粗排→精排→扩展→混合→路由）
+│   │   ├── retriever.py         # 检索器抽象 + pgvector 粗排
+│   │   ├── reranker.py          # Cross-Encoder 精排 (bge-reranker-v2-m3)
+│   │   ├── adjacent_expander.py # 相邻条文上下文扩展
+│   │   ├── article_router.py    # 条款号精确路由（"法名+第X条" 置顶）
+│   │   ├── bm25_retriever.py    # BM25 关键词检索（法名入索引）
+│   │   ├── hybrid_retriever.py  # 条件激活 rank-based 混合（加权 RRF）
+│   │   ├── engine.py            # 问答管线 + Prompt 构建
+│   │   └── ...
+│   ├── agents/                # LangGraph Agent（意图识别→检索→生成→校验）
+│   ├── api/                   # FastAPI（认证/路由/依赖注入检索链）
+│   ├── memory/                # 会话记忆 + FAQ 缓存
 │   └── config.py               # 全局配置
 ├── frontend/                  # Vue 3 前端
-│   ├── src/views/              # 对话页 / 登录页
+│   ├── src/views/              # 对话 / 登录 / 知识库
 │   ├── src/stores/             # Pinia 状态管理
 │   └── src/api/                # API 封装
-├── scripts/
+├── scripts/                   # 业务/运维脚本（操作知识库）
 │   ├── crawl.py                # 法律爬虫入口（直写 pgvector）
-│   ├── smoke_test.py           # 冒烟测试 (6 条路径)
-│   ├── eval_answer_quality.py  # 回答质量评测
-│   ├── batch_eval.py           # 检索批量评测
-│   └── generate_eval_dataset.py# 测试集生成
-├── tests/
-│   ├── test_chunking.py        # 44 用例 (解析+切分)
-│   ├── test_rag_engine.py      # 33 用例 (闲聊/Prompt/条文)
-│   ├── test_llm.py             # 17 用例 (Message/Config/构建)
-│   ├── test_embedding.py       # 7 用例 (向量化/重试)
-│   └── test_classify.py        # 30 用例 (意图分类)
+│   ├── ingest_lawdata.py       # LawData 批量导入
+│   ├── rechunk_lawdata.py      # 存量重切分（按「第X条」）
+│   ├── backfill_lawname.py     # 法律名称回填
+│   └── rebuild_article_map.py  # article_map.json 重建
+├── evaluation/                # 测试/评测（只读验证）
+│   ├── scripts/                # 评测脚本（检索/回答质量/冒烟/测试集生成）
+│   └── data/                   # 评测集（语义 100 条 / 法条级 339 条 / LexEval）
+├── tests/                     # pytest 自动化测试（325 用例）
 ├── data/
-│   └── eval_dataset.json       # 131 条标注测试集
+│   └── vector_store/
+│       └── article_map.json    # 条文映射表（相邻扩展运行时依赖）
+└── docker/
+    └── init.sql                # pgvector 表结构初始化
 ├── docs/                       # 文档
 │   ├── technical_report.md     # 技术报告
 │   ├── retrieval_eval.md       # 检索评测
@@ -91,7 +92,8 @@ Law-RAG-Agent/
 
 ```bash
 # 安装 Ollama 并拉取 LLM 与 Embedding 模型
-ollama pull qwen2.5:7b
+# 说明: qwen2.5:7b 在 6GB 显存下 CPU 占用过高，生产使用 qwen2.5:3b（100% GPU）
+ollama pull qwen2.5:3b
 ollama pull bge-m3
 # Reranker 由 sentence-transformers 本地加载 BAAI/bge-reranker-v2-m3
 # （需提前缓存到本地 HF 目录；程序强制离线加载，不会联网下载）
@@ -215,15 +217,15 @@ curl -X POST http://localhost:8000/api/chat \
 | `EMBED_MODEL` | `bge-m3` | Embedding 模型名 |
 | `EMBED_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
 | `EMBED_BATCH_SIZE` | `32` | 向量化批次大小（Ollama 受限环境可调小至 8） |
-| `LLM_MODEL` | `qwen2.5:7b` | LLM 模型名 |
+| `LLM_MODEL` | `qwen2.5:3b` | LLM 模型名 |
 | `LLM_BASE_URL` | `http://localhost:11434` | Ollama 地址 |
 | `LLM_TEMPERATURE` | `0.1` | 生成温度 |
 | `LLM_TOP_P` | `0.9` | Nucleus 采样 |
 | `LLM_MAX_TOKENS` | `2048` | 最大生成 token |
 | `RETRIEVAL_TOP_K` | `5` | 检索返回条数 |
-| `RETRIEVAL_HYBRID_ENABLED` | `false` | 混合检索开关（评测为负优化） |
-| `RETRIEVAL_BM25_WEIGHT` | `0.0` | BM25 权重 |
 | `RETRIEVAL_DROP_SUMMARY_CHUNKS` | `true` | 检索时过滤章级摘要噪声（消除 30+ 条无关条文召回） |
+| `ADJACENT_ENABLED` | `true` | 相邻条文扩展开关 |
+| `ADJACENT_WINDOW` | `1` | 相邻扩展窗口（±N 条，曾用 3 导致引用噪声，改 1） |
 | `RETRIEVAL_SIM_THRESHOLD` | `0.0` | 向量相似度召回闸门（bge-m3 归一化内积，范围约 [-1,1]）；>0 时低于阈值的候选被丢弃，过滤后无候选则回退保留；建议 0.3~0.5 |
 | `RERANK_ENABLED` | `true` | Reranker 精排开关 |
 | `RERANK_MODEL` | `BAAI/bge-reranker-v2-m3` | Reranker 模型 |
@@ -236,6 +238,9 @@ curl -X POST http://localhost:8000/api/chat \
 | `JWT_SECRET` | (必填) | JWT 签名密钥 |
 | `PG_ENABLED` | `true` | 纯 PG 架构：必须为 true（v0.6 起无 FAISS 回退） |
 | `PG_CONN` | `postgresql://lawrag:lawrag123@localhost:5432/lawrag` | pgvector 连接串 |
+| `HYBRID_ENABLED` | `true` | BM25 条件混合检索（仅法名/条款查询激活） |
+| `HYBRID_RRF_K` | `60` | RRF 融合常数（只看排名不碰分数） |
+| `HYBRID_BM25_WEIGHT` | `3.0` | BM25 路融合权重（向量路=1.0） |
 
 ---
 
@@ -244,11 +249,16 @@ curl -X POST http://localhost:8000/api/chat \
 ### RAG 检索流程
 
 ```
-用户查询 → pgvector 向量检索 (bge-m3, halfvec+HNSW) → chunk_type 过滤
-         → 相邻条文扩展 (window=±1)
-         → bge-reranker-v2-m3 精排 (Cross-Encoder, Top 15)
-         → Prompt 拼接 → LLM 生成 → 答案
+用户查询
+  → 条款号路由: 含"法名+第X条"时精确置顶 (ArticleRouter)
+  → pgvector 向量检索 (bge-m3, halfvec, 精确扫描)
+  → 相邻条文扩展 (window=±1)
+  → bge-reranker-v2-m3 精排 (Cross-Encoder, Top 15)
+  → 条件 BM25 混合: 查询含法名/条款号时按排名加权融合 (加权 RRF)
+  → Prompt 拼接 → LLM 生成 → 答案
 ```
+
+检索质量（2026-08 评测，法条级 339 条测试集）：Hit@1 68.1% / Hit@5 86.1% / Hit@10 91.7%
 
 ### Agent 工作流 (LangGraph)
 
@@ -265,10 +275,10 @@ intent (意图识别)
 
 ### 切分策略
 
-- 以「条」为最小切分单元，保持法律语义完整
-- 短于 50 字的连续条文自动合并
-- 为每章生成摘要 chunk，但检索时自动过滤（避免噪声）
-- 每个 chunk 携带层次元数据 (法律名 → 编 → 章 → 节 → 条文范围)
+按文档类型差异化切分（`src/knowledge/ingestion/pipeline.py`）：
+- **条文体**（law / regulation / constitution / supervision）：以「第X条」为天然边界，每个条文独立成块（短条文不合并）；超长条文按句号拆分且续块保留条号前缀，保证引用可追溯
+- **非条文体**（judicial_interpretation / case）：按自然段切分，不硬拆条文（保持案件事实/解释脉络连续）
+- 每个 chunk 携带层次元数据（法律名 → 条文范围），供检索结果「引用条文」展示
 
 ### Prompt 设计
 
@@ -317,20 +327,17 @@ intent (意图识别)
 ## 命令行工具
 
 ```bash
-# 构建索引
-uv run python scripts/build_index.py build
-
 # 冒烟测试
-uv run python scripts/smoke_test.py
+uv run python evaluation/scripts/smoke_test.py
 
-# 测试集填充
-uv run python scripts/fill_eval_dataset.py --resume
+# 检索质量评测（100 条语义评测集）
+uv run python evaluation/scripts/eval_retrieval.py
+
+# 法条级评测集生成（按知识库实际条文）
+uv run python evaluation/scripts/generate_article_queries.py --per-law 3 --max-laws 60
 
 # 回答质量评测
-uv run python scripts/eval_answer_quality.py
-
-# 检索评测
-uv run python scripts/batch_eval.py
+uv run python evaluation/scripts/eval_answer_quality.py
 
 # 单元测试
 uv run pytest tests/ --ignore=tests/test_api.py -v
@@ -340,9 +347,9 @@ uv run pytest tests/ --ignore=tests/test_api.py -v
 
 ## 知识库
 
-`LawData/` 目录包含 30 部中国法律原文，共 3449 条纯法条向量文档。涵盖：
+知识库基于 LawData 爬虫数据入库，当前规模 **931 篇文档 / 51348 chunks**（按「第X条」重切分后），doc_type 分布：regulation 594 / law 295 / judicial_interpretation 40 / case 2。覆盖刑法、民法典、宪法、行政处罚法、行政复议法、治安管理处罚法、食品安全法、劳动法、社会保险法、公司法、证券法、专利法、商标法、著作权法等主要法律。
 
-刑法、民法典、宪法、行政处罚法、行政复议法、行政强制法、行政许可法、治安管理处罚法、道路交通安全法、食品安全法、环境保护法、劳动法、社会保险法、公司法、证券法、企业破产法、合伙企业法、个人独资企业法、信托法、票据法、专利法、商标法、著作权法、反不正当竞争法、监察法、立法法、公务员法、全国人大组织法、国务院组织法、行政诉讼法
+（旧版本地 30 部原文测试数据已由 LawData 全量数据取代。）
 
 数据来源：北大法宝公开法律数据库。
 
