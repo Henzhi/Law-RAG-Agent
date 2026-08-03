@@ -73,6 +73,11 @@ LLM_TOP_P = _safe_float("LLM_TOP_P", 0.9)
 LLM_MAX_TOKENS = _safe_int("LLM_MAX_TOKENS", 2048)
 LLM_MAX_RETRIES = _safe_int("LLM_MAX_RETRIES", 3)
 
+# Ollama 请求上下文窗口 (num_ctx)。0 = 自动使用模型声明窗口 (get_context_window())。
+# 注意：Ollama 服务端 num_ctx 默认仅 2048，不显式下发会导致输入被静默截断；
+# 但窗口越大 KV Cache 显存占用越高，需按部署机显存调整。
+OLLAMA_NUM_CTX = _safe_int("OLLAMA_NUM_CTX", 0)
+
 # OpenAI 兼容后端配置
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")

@@ -63,6 +63,30 @@ class TestOllamaBackend:
         assert backend.get_context_window() == 28000  # 默认值
 
     @patch("src.llm.ollama_backend.ollama.Client")
+    def test_num_ctx_auto_from_window(self, mock_client):
+        """num_ctx 默认 0 → 自动使用模型声明窗口"""
+        from src.llm.ollama_backend import OllamaBackend
+        backend = OllamaBackend(model="qwen2.5:7b")
+        assert backend.num_ctx == 28000  # 与 get_context_window() 一致
+
+    @patch("src.llm.ollama_backend.ollama.Client")
+    def test_num_ctx_explicit_override(self, mock_client):
+        """显式指定 num_ctx 覆盖声明窗口（如显存受限时调小）"""
+        from src.llm.ollama_backend import OllamaBackend
+        backend = OllamaBackend(model="qwen2.5:7b", num_ctx=4096)
+        assert backend.num_ctx == 4096
+
+    @patch("src.llm.ollama_backend.ollama.Client")
+    def test_num_ctx_passed_to_options(self, mock_client):
+        """num_ctx 实际下发到 Ollama options（同步调用）"""
+        from src.llm.ollama_backend import OllamaBackend
+        backend = OllamaBackend(model="qwen2.5:7b", num_ctx=8192)
+        backend._generate_impl([{"role": "user", "content": "测试"}])
+        # 验证传给 ollama client 的 options 含 num_ctx
+        _, kwargs = mock_client.return_value.chat.call_args
+        assert kwargs["options"]["num_ctx"] == 8192
+
+    @patch("src.llm.ollama_backend.ollama.Client")
     def test_langchain_wrapper(self, mock_client):
         from src.llm.ollama_backend import OllamaBackend, OllamaLangChainWrapper
         backend = OllamaBackend(model="qwen2.5:7b")
@@ -128,6 +152,14 @@ class TestFactory:
         from src.llm.ollama_backend import OllamaBackend
         backend = create_llm_backend()
         assert isinstance(backend, OllamaBackend)
+
+    @patch.dict(os.environ, {"LLM_BACKEND": "ollama", "OLLAMA_NUM_CTX": "4096"})
+    @patch("src.llm.ollama_backend.ollama.Client")
+    def test_create_ollama_from_env_num_ctx(self, mock_client):
+        """OLLAMA_NUM_CTX 环境变量 → 后端 num_ctx"""
+        from src.llm.factory import create_llm_backend
+        backend = create_llm_backend(model="qwen2.5:7b")
+        assert backend.num_ctx == 4096
 
     @patch.dict(os.environ, {"LLM_BACKEND": "openai", "OPENAI_API_KEY": "sk-test"})
     @patch("src.llm.openai_backend.OpenAI")

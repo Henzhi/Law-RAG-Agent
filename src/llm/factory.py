@@ -66,6 +66,8 @@ def _create_ollama(**kwargs) -> OllamaBackend:
     top_p = kwargs.get("top_p", float(os.getenv("LLM_TOP_P", "0.9")))
     max_tokens = kwargs.get("max_tokens", int(os.getenv("LLM_MAX_TOKENS", "2048")))
     max_retries = kwargs.get("max_retries", int(os.getenv("LLM_MAX_RETRIES", "3")))
+    # 显式设置 num_ctx 可覆盖模型声明窗口；默认 0 = 自动
+    num_ctx = kwargs.get("num_ctx", int(os.getenv("OLLAMA_NUM_CTX", "0")))
 
     logger.info(f"创建 Ollama 后端: model={model}, base_url={base_url}")
     return OllamaBackend(
@@ -75,6 +77,7 @@ def _create_ollama(**kwargs) -> OllamaBackend:
         top_p=top_p,
         max_tokens=max_tokens,
         max_retries=max_retries,
+        num_ctx=num_ctx,
     )
 
 

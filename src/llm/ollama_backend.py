@@ -65,6 +65,7 @@ class OllamaBackend(LLMBackend):
         retry_delay: float = 2.0,
         repeat_penalty: float = 1.05,
         seed: int = 42,
+        num_ctx: int = 0,
     ):
         super().__init__(
             model=model,
@@ -77,6 +78,9 @@ class OllamaBackend(LLMBackend):
         self.base_url = base_url
         self.repeat_penalty = repeat_penalty
         self.seed = seed
+        # 请求上下文窗口：0 = 自动使用模型声明窗口（get_context_window()）。
+        # Ollama 服务端 num_ctx 默认仅 2048，不显式下发会静默截断输入。
+        self.num_ctx = num_ctx or self.get_context_window()
         self._client = self._init_client()
 
     def _init_client(self) -> ollama.Client:
@@ -101,6 +105,7 @@ class OllamaBackend(LLMBackend):
                         "temperature": self.temperature,
                         "top_p": self.top_p,
                         "num_predict": self.max_tokens,
+                        "num_ctx": self.num_ctx,
                         "repeat_penalty": self.repeat_penalty,
                         "seed": self.seed,
                     },
@@ -130,6 +135,7 @@ class OllamaBackend(LLMBackend):
                         "temperature": self.temperature,
                         "top_p": self.top_p,
                         "num_predict": self.max_tokens,
+                        "num_ctx": self.num_ctx,
                         "repeat_penalty": self.repeat_penalty,
                         "seed": self.seed,
                     },
