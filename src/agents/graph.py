@@ -189,33 +189,44 @@ class LawAgentGraph:
             except Exception as e:
                 logger.warning(f"流式: 记忆检索失败: {e}")
 
+        # 检索结果在整个重试循环内复用：校验不通过是回答质量问题，检索结果
+        # 没有变化，重试不应重新检索、更不应把检索到的全部条文再次推给前端。
+        cached_docs: list | None = None
+        sources: list = []
+
         for attempt in range(self.max_retries + 1):
             if attempt > 0:
                 yield {"type": "clear", "content": ""}
                 yield {"type": "thinking", "content": f"--- 第 {attempt + 1} 次尝试 ---"}
 
-            # 4. Retrieve
-            yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
-            state.update(self._nodes["retrieve"](state))
-            docs = state.get("retrieved_docs", [])
-            type_hint = "案例" if query_type == "case_query" else "条文"
-            yield {"type": "thinking", "content": f"📚 检索完成，找到 {len(docs)} 条相关{type_hint}"}
-            if docs:
-                citations = [d.get("citation", "") for d in docs[:5]]
-                yield {"type": "thinking", "content": f"📖 引用: {', '.join(citations)}"}
-            sources = [
-                {
-                    "law_name": d.get("law_name", ""),
-                    "chapter": d.get("chapter", ""),
-                    "section": d.get("section", ""),
-                    "article_range": d.get("article_range", ""),
-                    "citation": d.get("citation", ""),
-                    "score": 0.0,
-                    "content": d.get("content", ""),
-                }
-                for d in docs
-            ]
-            yield {"type": "meta", "sources": sources, "is_casual": False}
+            # 4. Retrieve（仅首次尝试执行并推送 sources）
+            if cached_docs is None:
+                yield {"type": "thinking", "content": "🔍 正在检索法律条文..."}
+                state.update(self._nodes["retrieve"](state))
+                docs = state.get("retrieved_docs", [])
+                type_hint = "案例" if query_type == "case_query" else "条文"
+                yield {"type": "thinking", "content": f"📚 检索完成，找到 {len(docs)} 条相关{type_hint}"}
+                if docs:
+                    citations = [d.get("citation", "") for d in docs[:5]]
+                    yield {"type": "thinking", "content": f"📖 引用: {', '.join(citations)}"}
+                cached_docs = docs
+                sources = [
+                    {
+                        "law_name": d.get("law_name", ""),
+                        "chapter": d.get("chapter", ""),
+                        "section": d.get("section", ""),
+                        "article_range": d.get("article_range", ""),
+                        "citation": d.get("citation", ""),
+                        "score": 0.0,
+                        "content": d.get("content", ""),
+                    }
+                    for d in docs
+                ]
+                yield {"type": "meta", "sources": sources, "is_casual": False}
+            else:
+                # 重试：复用首次检索结果（不再推送 sources）
+                docs = cached_docs
+                state["retrieved_docs"] = docs
 
             # 5. Generate
             yield {"type": "thinking", "content": "💭 模型正在思考..."}

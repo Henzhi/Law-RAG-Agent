@@ -8,6 +8,8 @@ Token预算 + 幻觉防御 + 可观测性 单元测试。
 """
 from __future__ import annotations
 
+from unittest.mock import MagicMock, patch
+
 
 class TestTokenBudget:
     def test_import(self):
@@ -147,3 +149,89 @@ class TestObservability:
         trace = _QueryTrace("fake_conn", "user_1", "测试", "req_1")
         trace.set_intent("law_lookup")
         assert trace._intent == "law_lookup"
+
+
+class _FakeLLM:
+    """模拟 LLMAdapter：流式返回固定 token，记录调用次数"""
+
+    def __init__(self):
+        self.stream_calls = 0
+
+    def chat_stream(self, prompt, history=None):
+        self.stream_calls += 1
+        yield "你好"
+        yield "，请放心。"
+
+    def chat(self, *args, **kwargs):
+        return "你好"
+
+
+class TestAgentStreamRetry:
+    """Agent 流式校验重试：复用首次检索结果，不重复推送 sources"""
+
+    def _make_agent(self, docs, validate_results):
+        from src.agents.graph import LawAgentGraph
+        from src.rag.retriever import BaseRetriever
+
+        llm = _FakeLLM()
+        agent = LawAgentGraph(
+            retriever=MagicMock(spec=BaseRetriever),
+            llm=llm,
+            top_k=5,
+            max_retries=1,
+        )
+
+        retrieve_calls = {"n": 0}
+
+        def fake_retrieve(state):
+            retrieve_calls["n"] += 1
+            return {"retrieved_docs": docs}
+
+        validate_calls = {"n": 0}
+
+        def fake_validate(state):
+            result = validate_results[min(validate_calls["n"], len(validate_results) - 1)]
+            validate_calls["n"] += 1
+            return result
+
+        agent._nodes["retrieve"] = fake_retrieve
+        agent._nodes["validate"] = fake_validate
+        return agent, llm, retrieve_calls
+
+    def test_retry_reuses_retrieval_and_meta_sent_once(self):
+        docs = [
+            {
+                "law_name": "中华人民共和国刑法", "citation": "刑法第二十条",
+                "chapter": "第二编", "section": "", "article_range": "第二十条",
+                "content": "为了使国家、公共利益、本人或者他人的人身、财产和其他权利免受正在进行的不法侵害...",
+                "chunk_type": "article",
+            },
+        ]
+        agent, llm, retrieve_calls = self._make_agent(
+            docs,
+            [
+                {"validation_passed": False, "validation_feedback": "引用不准确"},
+                {"validation_passed": True},
+            ],
+        )
+
+        events = []
+        with patch("src.agents.graph.classify_query_type", return_value="law_lookup"), \
+             patch("src.memory.hallucination_guard.HallucinationGuard.guard",
+                   return_value={"blocked": False, "reason": ""}):
+            for ev in agent.stream("行政拘留最长多久", history=[]):
+                events.append(ev)
+
+        metas = [e for e in events if e["type"] == "meta"]
+        clears = [e for e in events if e["type"] == "clear"]
+        tokens = [e for e in events if e["type"] == "token"]
+
+        assert retrieve_calls["n"] == 1, "校验重试不应重新检索"
+        assert len(metas) == 1, "sources 只应推送给前端一次"
+        assert len(clears) == 1, "重试应触发一次 clear"
+        assert sum(1 for e in tokens if e["content"] == "你好") == 2, "两次尝试各生成一次回答"
+        assert metas[0]["sources"][0]["law_name"] == "中华人民共和国刑法"
+        # 重试期间（clear 之后）不应再出现 meta
+        first_clear_idx = next(i for i, e in enumerate(events) if e["type"] == "clear")
+        assert all(e["type"] != "meta" for e in events[first_clear_idx:]), \
+            "重试阶段不应再次推送 sources"
