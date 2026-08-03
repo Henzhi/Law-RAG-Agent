@@ -12,6 +12,12 @@ class ChatRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20, description="检索条文数")
     history: list[dict] = Field(default_factory=list, description="多轮对话历史 [{role, content}]")
     session_id: str = Field(default="", description="会话 ID，客户端传入，服务端按用户隔离校验")
+    request_id: str = Field(default="", description="请求唯一 ID，用于客户端取消该生成请求")
+
+
+class CancelRequest(BaseModel):
+    """取消生成请求：前端点击停止后通知后端立即中断对应 LLM 流"""
+    request_id: str = Field(..., min_length=1, max_length=64, description="要取消的请求 ID")
 
 
 class RewriteRequest(BaseModel):

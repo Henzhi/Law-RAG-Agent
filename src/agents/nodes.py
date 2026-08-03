@@ -99,7 +99,7 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
     # ---- 意图识别 ----
 
     def classify_intent_node(state: AgentState) -> dict:
-        query_type = classify_query_type(state["query"])
+        query_type = classify_query_type(state["query"], history=state.get("messages", []))
         is_legal = query_type != "casual"
         logger.info(f"意图识别: '{state['query']}' → {query_type}")
         return {"is_legal_query": is_legal, "query_type": query_type}

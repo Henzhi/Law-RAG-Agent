@@ -10,6 +10,17 @@ function handleError(r) {
   return r.json()
 }
 
+// 主动取消生成：点击"停止"后除断开连接外，再通知后端立即中断 LLM 流
+// （覆盖经反向代理时断开信号传不到后端的场景）
+export function cancelChat(requestId) {
+  if (!requestId) return
+  fetch(`${BASE}/chat/cancel`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ request_id: requestId }),
+  }).catch(() => {})
+}
+
 // Auth
 export const login = (username, password) =>
   fetch(`${BASE}/auth/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) }).then(handleError)
@@ -69,11 +80,11 @@ export const getDocumentChunks = (docId, limit = 50, offset = 0) =>
   fetch(`${BASE}/knowledge/documents/${docId}/chunks?limit=${limit}&offset=${offset}`, { headers: authHeaders() }).then(handleError)
 
 // Chat Stream
-export async function* streamChat(query, history, sessionId, { signal } = {}) {
+export async function* streamChat(query, history, sessionId, { signal, requestId } = {}) {
   const resp = await fetch(`${BASE}/chat/stream`, {
     method: 'POST',
     headers: authHeaders(),
-    body: JSON.stringify({ query, history, session_id: sessionId }),
+    body: JSON.stringify({ query, history, session_id: sessionId, request_id: requestId || '' }),
     signal,
   })
   if (!resp.ok) throw new Error(`请求失败: ${resp.status}`)

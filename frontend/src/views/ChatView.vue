@@ -127,7 +127,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { useChatStore } from '../stores/chat'
-import { loadHistory, listConversations, saveSession, streamChat, rewriteQuery, deleteConversation } from '../api'
+import { loadHistory, listConversations, saveSession, streamChat, rewriteQuery, deleteConversation, cancelChat } from '../api'
 import Sidebar from '../components/Sidebar.vue'
 import ChatMessage from '../components/ChatMessage.vue'
 import ChatInput from '../components/ChatInput.vue'
@@ -143,6 +143,8 @@ const thinkingOpen = ref(true)
 const answered = ref(false)
 // 当前生成请求的取消控制器：点击"停止"时 abort，后端会收到断开并停止消耗 Token
 const abortController = ref(null)
+// 当前生成请求的唯一 ID：停止时通过 /chat/cancel 主动通知后端中断（覆盖代理场景）
+const currentRequestId = ref('')
 
 // 示例问题（空状态展示，点击直接提问）
 const suggestions = [
@@ -214,6 +216,7 @@ async function handleSend(query) {
   thinkingTraces.value = []
   thinkingOpen.value = true
   abortController.value = new AbortController()
+  currentRequestId.value = `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
 
   const recent = chat.messages.slice(-20)  // 不含当前提问
   chat.messages.push({ role: 'user', content: query })
@@ -227,9 +230,12 @@ async function handleSend(query) {
   }
 }
 
-// 用户点击"停止"：中止 fetch，浏览器断开连接，后端检测到断开后停止生成
+// 用户点击"停止"：中止 fetch（浏览器断开连接）+ 主动通知后端中断 LLM 流
 function stopGeneration() {
   abortController.value?.abort()
+  if (currentRequestId.value) {
+    cancelChat(currentRequestId.value)
+  }
 }
 
 // 智能改写流程：开启开关后，每次发送都先调用 /api/rewrite，弹出确认卡等待用户确认。
@@ -269,7 +275,7 @@ async function runStream(query, recent) {
   try {
     let answer = ''
     let sources = []
-    for await (const msg of streamChat(query, recent, chat.sessionId, { signal: ctrl?.signal })) {
+    for await (const msg of streamChat(query, recent, chat.sessionId, { signal: ctrl?.signal, requestId: currentRequestId.value })) {
       if (msg.type === 'thinking') {
         thinkingTraces.value.push(msg.content)
       } else if (msg.type === 'clear') {

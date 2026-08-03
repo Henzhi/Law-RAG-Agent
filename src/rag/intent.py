@@ -41,6 +41,17 @@ _CASUAL_PATTERNS = [
     r'^(嗯|哦|好吧|好的|OK|ok)$',
 ]
 
+# 身份/自我介绍类模式 — 只用于 classify_intent / classify_query_type（Agent 路径）。
+# 不进入 _CASUAL_PATTERNS：避免影响 RAGEngine 的 needs_retrieval 快路径
+# （"我是农民工"这类短句在非 Agent 路径仍交给 LLM 自省判断，防止误伤真实法律咨询）。
+_SELF_INTRO_PATTERNS = [
+    # 反身/身份问句
+    r'^(我是谁|我是干什么的|我是做什么的|我是什么人|我是你|我是什么)',
+    r'^(你认识我|你知道我是谁|还记得我吗|你记得我吗|我叫什么|我姓什么|我的名字)',
+    # 短自我介绍（≤6 字，如"我是痕至""我叫小明""我姓王"）
+    r'^(我是|我叫|我姓).{0,4}$',
+]
+
 # 闲聊短语 — 精确匹配即跳过检索
 _CASUAL_PHRASES = {
     # 问候
@@ -184,20 +195,32 @@ def is_casual_query(query: str) -> bool:
 # 意图分类（关键词，供 LangGraph Agent）
 # ---------------------------------------------------------------------------
 
-def classify_intent(query: str) -> bool:
+def classify_intent(query: str, history: list | None = None) -> bool:
     """意图识别：是否为法律相关问题？
 
     1. 正则兜底：明显闲聊 → 闲聊
-    2. 标准化后精确匹配闲聊短语 → 闲聊
-    3. 标准化后包含法律关键词 → 法律
-    4. 短查询（≤4字）包含闲聊短语 → 闲聊（二次检查）
-    5. 都不匹配 → 默认检索（宁可多检）
+    2. 身份/自我介绍问句（"我是谁"、"我是痕至"、"你记得我吗"）→ 闲聊
+    3. 标准化后精确匹配闲聊短语 → 闲聊
+    4. 标准化后包含法律关键词 → 法律
+    5. 短查询（≤4字）包含闲聊短语 → 闲聊（二次检查）
+    6. 结合对话历史：用户刚问候/自我介绍后紧跟的短句 → 闲聊（延续性）
+    7. 都不匹配 → 默认检索（宁可多检）
+
+    Args:
+        query: 用户输入
+        history: 可选，多轮对话历史（list[dict] 或 list[Message]），
+                 用于判断"我是谁""你记得我吗"等依赖上下文的延续性闲聊。
     """
     q = query.strip()
     nq = _normalize(q)
 
     if q and is_casual_query(query):
         return False
+
+    # 身份/自我介绍问句（独立于 is_casual_query，避免影响 engine 快路径）
+    for pattern in _SELF_INTRO_PATTERNS:
+        if re.match(pattern, q, re.IGNORECASE):
+            return False
 
     for phrase in _CASUAL_PHRASES:
         if _normalize(phrase) == nq:
@@ -211,6 +234,10 @@ def classify_intent(query: str) -> bool:
         for phrase in _CASUAL_PHRASES:
             if _normalize(phrase) in nq:
                 return False
+
+    # 上下文延续：历史上用户刚问候/自我介绍，当前为短句 → 延续性闲聊
+    if history and _is_contextual_casual(query, history):
+        return False
 
     return True
 
@@ -238,8 +265,12 @@ _CASE_KEYWORDS = [
 ]
 
 
-def classify_query_type(query: str) -> str:
+def classify_query_type(query: str, history: list | None = None) -> str:
     """意图三分类：返回查询类型
+
+    Args:
+        query: 用户输入
+        history: 可选，多轮对话历史，用于延续性闲聊判断
 
     Returns:
         "casual"       — 闲聊/问候，不检索
@@ -254,8 +285,8 @@ def classify_query_type(query: str) -> str:
     if not is_safe:
         return "casual"
 
-    # 1. 闲聊检测
-    if not classify_intent(q):
+    # 1. 闲聊检测（含身份/自我介绍 + 历史延续性判断）
+    if not classify_intent(q, history=history):
         return "casual"
 
     # 2. 案例关键词检测（已去重 normalize，直接在 nq 上匹配）
@@ -270,6 +301,43 @@ def classify_query_type(query: str) -> str:
 
     # 4. 默认：长查询走法条检索
     return "law_lookup"
+
+
+def _history_suggests_casual(history: list) -> bool:
+    """历史中最近的用户消息是问候或自我介绍（供延续性闲聊判断）"""
+    if not history:
+        return False
+    last = history[-1]
+    if isinstance(last, dict):
+        role = last.get("role", "")
+        content = str(last.get("content", ""))
+    else:
+        role = getattr(last, "role", "")
+        content = str(getattr(last, "content", ""))
+    if role != "user":
+        return False
+    c = content.strip()
+    if not c:
+        return False
+    return bool(
+        re.match(r'^(你好|您好|hi|hello|嗨|嗨喽)', c, re.IGNORECASE)
+        or re.match(r'^(我是|我叫|我姓)', c)
+    )
+
+
+def _is_contextual_casual(query: str, history: list) -> bool:
+    """当前为短句、不含法律关键词，且历史上用户刚问候/自我介绍 → 延续性闲聊
+
+    例：用户先发"你好，我是痕至"，紧接着问"我是谁/你记得我吗/那我呢"。
+    含法律关键词的短句（如"判多久"）仍按法律咨询处理。
+    """
+    nq = _normalize(query)
+    if not nq or len(nq) > 8:
+        return False
+    for kw in _LEGAL_KEYWORDS:
+        if _normalize(kw) in nq:
+            return False
+    return _history_suggests_casual(history)
 
 
 # ---------------------------------------------------------------------------

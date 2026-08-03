@@ -16,9 +16,10 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Depends, UploadFile, File, Form, Request
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from .dependencies import get_engine, get_agent, get_llm, _create_embedder
-from .models import ChatRequest, ChatResponse, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse, RewriteRequest
+from .models import ChatRequest, ChatResponse, CancelRequest, HealthResponse, RegisterRequest, LoginRequest, AuthResponse, CrawlRequest, CrawlTaskResponse, CrawlStatusResponse, RewriteRequest
 from .auth import get_current_user, require_registered_user, register_user, login_user
 from src.config import AGENT_ENABLED, LLM_MAX_CONCURRENCY
 from src.rag.engine import needs_retrieval
@@ -220,13 +221,52 @@ _STREAM_SEMAPHORE = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
 
 _SENTINEL_END = ("__stream_end__", None)
 
+# ---------------------------------------------------------------------------
+# 主动取消：前端点击"停止"后除断开连接外，还会发送 /chat/cancel
+# 设置取消标记。这覆盖了经反向代理（nginx / vite proxy）时断开信号
+# 传不到后端、后端感知不到客户端断开的场景。
+# ---------------------------------------------------------------------------
+_CANCEL_FLAGS: dict[str, threading.Event] = {}
+_CANCEL_LOCK = threading.Lock()
 
-async def _bridge_sync_stream(gen_factory: Callable[[], Iterator[dict]], request: Request):
+
+@router.post("/chat/cancel")
+def cancel_chat(req: CancelRequest):
+    """设置取消标记，对应的流式生成会在下一个事件周期立即中断"""
+    with _CANCEL_LOCK:
+        ev = _CANCEL_FLAGS.pop(req.request_id, None)
+    if ev is not None:
+        ev.set()
+    return {"ok": True}
+
+
+async def _bridge_sync_stream(
+    gen_factory: Callable[[], Iterator[dict]],
+    request: Request,
+    disconnect_event: asyncio.Event | None = None,
+    cancel_event: threading.Event | None = None,
+):
     """在后台线程迭代同步生成器，主协程逐步产出事件。
 
     - 不阻塞事件循环
-    - 客户端断开 → 关闭底层生成器，立即停止 LLM 消耗
+    - 客户端断开 / 主动取消 → 关闭底层生成器，立即停止 LLM 消耗
+
+    disconnect_event: 由调用方监听 ASGI http.disconnect 设置的事件。
+      request.is_disconnected() 实现依赖 CancelScope 立即取消，在连接
+      未断开时会抛 CancelledError 被吞掉返回 False；且会与 StreamingResponse
+      内部监听竞争同一个 receive 通道。因此以事件监听为主、is_disconnected 兜底。
+
+    cancel_event: 前端点击停止后通过 /chat/cancel 设置的取消标记，
+      用于覆盖经反向代理时断开信号传不到后端的场景。
     """
+
+    async def _client_gone() -> bool:
+        if disconnect_event is not None and disconnect_event.is_set():
+            return True
+        if cancel_event is not None and cancel_event.is_set():
+            return True
+        return await _is_disconnected(request)
+
     q: _queue.Queue = _queue.Queue(maxsize=64)
     stop = threading.Event()
     loop = asyncio.get_running_loop()
@@ -240,11 +280,17 @@ async def _bridge_sync_stream(gen_factory: Callable[[], Iterator[dict]], request
             gen_ref["gen"] = gen
             for item in gen:
                 if stop.is_set():
+                    # 断开：在当前（生成器执行）线程 close，GeneratorExit
+                    # 立即在挂起的 yield 点投递，底层 LLM 流的 finally
+                    # 立即关闭连接，停止 Token 消耗。
+                    gen.close()
                     break
                 try:
                     q.put(item, timeout=1.0)
                 except _queue.Full:
-                    break  # 消费者已停止，防御性退出
+                    # 消费者已停止（断开场景）：同样 close 生成器
+                    gen.close()
+                    break
         except GeneratorExit:
             pass
         except Exception as e:
@@ -271,7 +317,7 @@ async def _bridge_sync_stream(gen_factory: Callable[[], Iterator[dict]], request
             try:
                 item = await asyncio.to_thread(q.get, True, 1.0)
             except _queue.Empty:
-                if await _is_disconnected(request):
+                if await _client_gone():
                     stop.set()
                     break
                 continue
@@ -284,7 +330,7 @@ async def _bridge_sync_stream(gen_factory: Callable[[], Iterator[dict]], request
                 raise item[1]
 
             # 产出前检查断开
-            if await _is_disconnected(request):
+            if await _client_gone():
                 stop.set()
                 break
             yield item
@@ -378,25 +424,85 @@ async def chat_stream(req: ChatRequest, request: Request):
         gen_factory = lambda: _iter_engine_stream(engine, safe_query, history)
         mode = "rag"
 
+    # 可靠的断开检测：直接监听 ASGI http.disconnect 事件。
+    # （uvicorn 在连接断开后会持续返回 http.disconnect，不受
+    #   StreamingResponse 内部监听竞争影响；request.is_disconnected()
+    #   仅在桥接中作兜底。）
+    disconnect_event = asyncio.Event()
+
+    # 主动取消标记：前端停止时经 /chat/cancel 设置，覆盖代理场景
+    cancel_event: threading.Event | None = None
+    if req.request_id:
+        cancel_event = threading.Event()
+        with _CANCEL_LOCK:
+            _CANCEL_FLAGS[req.request_id] = cancel_event
+
+    async def _listen_disconnect() -> None:
+        try:
+            while True:
+                msg = await request.receive()
+                if msg["type"] == "http.disconnect":
+                    disconnect_event.set()
+                    return
+        except Exception:
+            pass  # 连接已关闭或异常，视为已断开
+
     async def generate():
         try:
             # 并发上限：排队等待，避免打爆供应商 / 显存
             async with _STREAM_SEMAPHORE:
-                async for event in _bridge_sync_stream(gen_factory, request):
+                async for event in _bridge_sync_stream(gen_factory, request, disconnect_event, cancel_event):
                     yield _sse(event)
         except Exception as e:
             elapsed = (time.perf_counter() - t_start) * 1000
             perf_logger.error(f"[stream] mode={mode} error={type(e).__name__}: {e} elapsed={elapsed:.0f}ms")
             yield _sse({"type": "error", "content": "处理失败，请稍后重试"})
-        elapsed = (time.perf_counter() - t_start) * 1000
-        perf_logger.info(f"[stream] mode={mode} query_len={len(req.query)} elapsed={elapsed:.0f}ms")
-        yield "data: [DONE]\n\n"
+        finally:
+            yield "data: [DONE]\n\n"
 
-    return StreamingResponse(
-        generate(),
+    agen = generate()
+
+    async def _watchdog() -> None:
+        """客户端断开 / 主动取消后主动关闭生成器。
+
+        客户端断开时 StreamingResponse 会停止迭代 generate()，generate()
+        会挂死在 yield 处，桥接的清理 finally（close 底层 LLM）不会执行，
+        Token 继续被消耗。watchdog 检测到断开/取消后立即 aclose 生成器，
+        使清理逻辑可靠执行。
+        """
+        try:
+            while True:
+                if disconnect_event.is_set() or (cancel_event is not None and cancel_event.is_set()):
+                    await agen.aclose()
+                    return
+                await asyncio.sleep(0.2)
+        except Exception:
+            pass
+
+    listener = asyncio.create_task(_listen_disconnect())
+    watchdog = asyncio.create_task(_watchdog())
+
+    async def _finalize() -> None:
+        # 释放取消标记，防止泄漏
+        if req.request_id:
+            with _CANCEL_LOCK:
+                _CANCEL_FLAGS.pop(req.request_id, None)
+        listener.cancel()
+        watchdog.cancel()
+        for t in (listener, watchdog):
+            try:
+                await t
+            except Exception:
+                pass
+
+    response = StreamingResponse(
+        agen,
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+    # 响应结束后（含客户端断开）执行收尾，取消监听/看门狗任务
+    response.background = BackgroundTask(_finalize)
+    return response
 
 
 # ------------------------------------------------------------------

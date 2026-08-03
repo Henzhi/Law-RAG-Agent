@@ -96,7 +96,7 @@ class LawAgentGraph:
 
     def ask(self, query: str, history: list[dict] | None = None, user_id: str = "") -> dict:
         """同步问答 — 含 FAQ 缓存检查（与 stream() 路径行为一致）"""
-        query_type = classify_query_type(query)
+        query_type = classify_query_type(query, history=history or [])
 
         # FAQ 缓存检查
         if self._faq_cache:
@@ -143,15 +143,16 @@ class LawAgentGraph:
         """流式问答 - 手动步进 + LLM 真实流式输出"""
         yield {"type": "thinking", "content": "🔧 正在初始化 Agent..."}
 
-        # 1. 意图识别
-        query_type = classify_query_type(query)
+        # 1. 意图识别（结合对话历史判断延续性闲聊）
+        query_type = classify_query_type(query, history=history or [])
         is_legal = query_type != "casual"
         type_label = {"law_lookup": "法律条文查询", "case_query": "案例检索", "casual": "闲聊"}
         yield {"type": "thinking", "content": f"🎯 意图识别: {type_label.get(query_type, query_type)}"}
 
         if not is_legal:
             yield {"type": "thinking", "content": "📝 直接回复，无需检索"}
-            for token in self.llm.chat_stream(query):
+            # 闲聊也带上历史，让 LLM 结合上下文（如自我介绍后问"我是谁"）
+            for token in self.llm.chat_stream(query, history=history or []):
                 yield {"type": "token", "content": token}
             yield {"type": "thinking", "content": "✅ 完成"}
             return

@@ -79,8 +79,10 @@ function doSend() {
   box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 .input-row.disabled {
-  opacity: 0.6;
   cursor: not-allowed;
+}
+.input-row.disabled textarea {
+  opacity: 0.6;
 }
 
 textarea {
