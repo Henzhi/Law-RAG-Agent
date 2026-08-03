@@ -332,7 +332,7 @@ function doLogout() {
 </script>
 
 <style scoped>
-.chat-layout { height: 100vh; display: flex; background: var(--color-bg); }
+.chat-layout { height: 100vh; display: flex; background: var(--color-surface); }
 .main-area { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 
 /* 顶部工具栏 */

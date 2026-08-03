@@ -104,3 +104,28 @@ export async function rewriteQuery(query) {
   if (!resp.ok) throw new Error(`改写请求失败: ${resp.status}`)
   return resp.json()
 }
+
+// Crawl（在线更新法律：国家法律法规数据库增量爬取）
+export const listCrawlTypes = () =>
+  fetch(`${BASE}/crawl/types`, { headers: authHeaders() }).then(handleError)
+
+export const startCrawl = (params) => {
+  const body = {
+    source: 'npc',
+    doc_type: params.doc_type,
+    keyword: params.keyword || '',
+    limit: params.limit,
+    force: !!params.force,
+    subdir: params.subdir || '',
+    store: params.store || 'both',
+    rebuild: !!params.rebuild,
+  }
+  return fetch(`${BASE}/crawl`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  }).then(handleError)
+}
+
+export const getCrawlStatus = (taskId) =>
+  fetch(`${BASE}/crawl/status/${taskId}`, { headers: authHeaders() }).then(handleError)

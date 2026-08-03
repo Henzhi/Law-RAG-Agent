@@ -78,6 +78,75 @@
       </form>
     </div>
 
+    <!-- 在线更新法律（爬虫） -->
+    <div class="crawl-section">
+      <div class="section-header">
+        <h3>在线更新法律</h3>
+        <span class="crawl-hint">数据源：国家法律法规数据库，增量去重，副本自动保存到 LawData/</span>
+      </div>
+      <div class="crawl-form">
+        <div class="form-row">
+          <label>
+            文档类型
+            <select v-model="crawlForm.doc_type">
+              <option v-for="(label, key) in crawlTypes" :key="key" :value="key">{{ label }}</option>
+            </select>
+          </label>
+          <label>
+            输出目标
+            <select v-model="crawlForm.store">
+              <option value="both">pgvector + LawData 副本（推荐）</option>
+              <option value="pg">仅 pgvector</option>
+              <option value="txt">仅 LawData 文本副本</option>
+            </select>
+          </label>
+          <label>
+            最多条数
+            <input v-model.number="crawlForm.limit" type="number" min="0" max="1000" />
+            <span class="field-hint">0 = 不限</span>
+          </label>
+          <label>
+            标题关键词
+            <input v-model="crawlForm.keyword" placeholder="空 = 该类型全部，如：数据安全法" />
+          </label>
+        </div>
+        <div class="crawl-options">
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="crawlForm.force" /> 强制重爬（覆盖已存在文档）
+          </label>
+          <label class="checkbox-label">
+            <input type="checkbox" v-model="crawlForm.rebuild" /> 爬完后重建向量索引
+          </label>
+        </div>
+        <div class="crawl-actions">
+          <button class="btn-crawl" @click="handleCrawl" :disabled="crawlRunning || !Object.keys(crawlTypes).length">
+            {{ crawlRunning ? '爬取中...' : '开始增量更新' }}
+          </button>
+          <span v-if="crawlMsg" class="success">{{ crawlMsg }}</span>
+          <span v-if="crawlErr" class="error">{{ crawlErr }}</span>
+        </div>
+      </div>
+
+      <!-- 爬取任务进度 -->
+      <div v-if="crawlTask" class="crawl-task">
+        <div class="task-row">
+          <span class="task-id">任务 {{ crawlTask.task_id }}</span>
+          <span class="task-status" :class="crawlTask.status">{{ crawlStatusText(crawlTask.status) }}</span>
+        </div>
+        <div v-if="crawlTask.progress" class="crawl-progress">
+          <span>命中 {{ crawlTask.progress.total }}</span>
+          <span class="crawl-add">新增 {{ crawlTask.progress.added }}</span>
+          <span class="crawl-upd">更新 {{ crawlTask.progress.updated }}</span>
+          <span>跳过 {{ crawlTask.progress.skipped }}</span>
+          <span class="crawl-fail">失败 {{ crawlTask.progress.failed }}</span>
+        </div>
+        <div v-if="crawlTask.errors && crawlTask.errors.length" class="task-errors">
+          <div v-for="(e, i) in crawlTask.errors.slice(0, 10)" :key="i" class="task-error">- {{ e }}</div>
+          <div v-if="crawlTask.errors.length > 10" class="task-error">… 共 {{ crawlTask.errors.length }} 条错误</div>
+        </div>
+      </div>
+    </div>
+
     <!-- 批量上传任务进度 -->
     <div v-if="tasks.length" class="task-section">
       <h3>批量处理进度（{{ doneCount }}/{{ tasks.length }}）</h3>
@@ -204,8 +273,8 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
-import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getDocumentChunks } from '../api'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
+import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getDocumentChunks, listCrawlTypes, startCrawl, getCrawlStatus } from '../api'
 
 // --- 文档列表 ---
 const documents = ref([])
@@ -429,6 +498,66 @@ function pollTask(t) {
   }, 2000)
 }
 
+// --- 在线更新法律（爬虫：国家法律法规数据库，增量） ---
+const crawlTypes = ref({})
+const crawlForm = ref({ doc_type: 'law', store: 'both', limit: 50, keyword: '', force: false, rebuild: false })
+const crawlTask = ref(null)
+const crawlRunning = ref(false)
+const crawlMsg = ref('')
+const crawlErr = ref('')
+let crawlTimer = null
+
+async function loadCrawlTypes() {
+  try {
+    const res = await listCrawlTypes()
+    crawlTypes.value = res.types || {}
+  } catch (e) {
+    console.error('加载爬取类型失败:', e)
+  }
+}
+
+async function handleCrawl() {
+  crawlRunning.value = true
+  crawlMsg.value = ''
+  crawlErr.value = ''
+  try {
+    const res = await startCrawl(crawlForm.value)
+    crawlTask.value = {
+      task_id: res.task_id,
+      status: res.status,
+      progress: { total: 0, added: 0, updated: 0, skipped: 0, failed: 0 },
+      errors: [],
+    }
+    crawlMsg.value = '任务已提交，正在增量更新...'
+    pollCrawl()
+  } catch (e) {
+    crawlErr.value = e.message
+    crawlRunning.value = false
+  }
+}
+
+function pollCrawl() {
+  if (crawlTimer) clearInterval(crawlTimer)
+  crawlTimer = setInterval(async () => {
+    if (!crawlTask.value || !crawlTask.value.task_id) return
+    try {
+      const s = await getCrawlStatus(crawlTask.value.task_id)
+      crawlTask.value = { ...crawlTask.value, ...s }
+      if (s.status === 'done' || s.status === 'error' || s.status === 'failed') {
+        clearInterval(crawlTimer)
+        crawlTimer = null
+        crawlRunning.value = false
+        crawlMsg.value = s.status === 'done' ? '更新完成，文档列表已刷新' : '更新失败'
+        if (s.status === 'done') loadDocuments()
+      }
+    } catch { /* 忽略瞬时错误，下轮重试 */ }
+  }, 3000)
+}
+
+function crawlStatusText(s) {
+  return { pending: '等待中', running: '爬取中', done: '已完成', error: '失败' }[s] || s
+}
+
 // --- 工具函数 ---
 function typeLabel(t) {
   // flk 顶级分类规范值 + 历史旧值兼容（judicial/interpretation/local）
@@ -465,6 +594,11 @@ function formatDate(d) {
 
 onMounted(() => {
   loadDocuments()
+  loadCrawlTypes()
+})
+
+onBeforeUnmount(() => {
+  if (crawlTimer) clearInterval(crawlTimer)
 })
 </script>
 
@@ -488,7 +622,7 @@ onMounted(() => {
 .upload-form { display: flex; flex-direction: column; gap: 16px; }
 .form-row { display: flex; gap: 16px; flex-wrap: wrap; }
 .form-row label { flex: 1; min-width: 160px; display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--color-text-muted); }
-.form-row input, .form-row select { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 14px; background: var(--color-bg); color: var(--color-text); }
+.form-row input, .form-row select { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 14px; background: var(--color-surface-soft); color: var(--color-text); }
 .file-input-row { display: flex; align-items: center; gap: 12px; }
 .file-label { cursor: pointer; }
 .file-label input[type="file"] { display: none; }
@@ -506,6 +640,24 @@ onMounted(() => {
 .btn-upload:disabled { opacity: 0.5; cursor: not-allowed; }
 .error { color: var(--color-error); font-size: 13px; }
 .success { color: #059669; font-size: 13px; }
+
+/* Crawl（在线更新法律） */
+.crawl-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
+.crawl-hint { font-size: 13px; color: var(--color-text-muted); }
+.crawl-form { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
+.crawl-options { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--color-text-secondary); }
+.checkbox-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.checkbox-label input { accent-color: var(--color-primary); }
+.crawl-actions { display: flex; align-items: center; gap: 12px; }
+.field-hint { color: var(--color-text-muted); font-size: 12px; }
+.btn-crawl { padding: 10px 24px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); font-size: 15px; cursor: pointer; }
+.btn-crawl:disabled { opacity: 0.5; cursor: not-allowed; }
+.crawl-task { margin-top: 16px; border-top: 1px dashed var(--color-border); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
+.crawl-progress { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--color-text-secondary); }
+.crawl-add { color: #059669; }
+.crawl-upd { color: var(--color-primary); }
+.crawl-fail { color: var(--color-error); }
+.task-errors { display: flex; flex-direction: column; gap: 2px; }
 
 /* Task progress */
 .task-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
@@ -527,7 +679,7 @@ onMounted(() => {
 .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .section-header h3 { font-size: 18px; }
 .count { color: var(--color-text-muted); font-size: 14px; font-weight: normal; }
-.filter-select { padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 13px; background: var(--color-bg); color: var(--color-text); }
+.filter-select { padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 13px; background: var(--color-surface-soft); color: var(--color-text); }
 .loading { text-align: center; color: var(--color-text-muted); padding: 32px; }
 .empty { text-align: center; color: var(--color-text-muted); padding: 48px 16px; font-size: 14px; }
 
@@ -597,9 +749,16 @@ onMounted(() => {
 .modal p { margin-bottom: 8px; color: var(--color-text-muted); font-size: 14px; }
 .modal .warn { color: var(--color-error); font-size: 13px; margin-top: 12px; }
 .modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 20px; }
-.btn-cancel { padding: 8px 20px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-bg); cursor: pointer; font-size: 14px; }
+.btn-cancel { padding: 8px 20px; border: 1px solid var(--color-border); border-radius: var(--radius); background: var(--color-surface-soft); cursor: pointer; font-size: 14px; }
 .btn-confirm-delete { padding: 8px 20px; border: none; border-radius: var(--radius); background: var(--color-error); color: #fff; cursor: pointer; font-size: 14px; }
 .btn-confirm-delete:disabled { opacity: 0.5; }
+
+/* 暗色模式下原生下拉列表可读性 */
+::root[data-theme='dark'] .form-row select option,
+::root[data-theme='dark'] .filter-select option {
+  background: var(--color-surface-soft);
+  color: var(--color-text);
+}
 
 /* ===== 深色模式覆盖：标签/徽标柔化为低饱和配色 ===== */
 :root[data-theme='dark'] .type-badge,
