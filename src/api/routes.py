@@ -543,18 +543,39 @@ def _get_store():
 
 
 @router.get("/knowledge/documents")
-def list_knowledge_documents(doc_type: str | None = None, status: str | None = None):
-    """列出知识库中的所有文档
+def list_knowledge_documents(
+    doc_type: str | None = None,
+    status: str | None = None,
+    q: str = "",
+    sort: str = "created_at",
+    order: str = "desc",
+    limit: int = 20,
+    offset: int = 0,
+):
+    """列出知识库中的文档（分页 + 排序 + 关键词搜索）
 
     Query:
         doc_type: 按类型过滤（flk 顶级分类规范值），不传则返回全部
         status: 按效力状态过滤（active/repealed/revised/pending，可逗号组合），
                 不传则返回全部（含废止/未生效，便于辨别法律效力）
+        q: 关键词，同时匹配标题与正文内容（大小写不敏感）
+        sort: 排序字段（created_at/updated_at/title/doc_type）
+        order: asc / desc
+        limit: 每页条数（默认 20，最大 200）
+        offset: 跳过条数（配合前端无限滚动分页）
+
+    Returns:
+        {documents, total, limit, offset}
     """
     from src.knowledge.doc_types import normalize_doc_type
     store = _get_store()
-    docs = store.list_documents(doc_type=normalize_doc_type(doc_type), status=status)
-    return {"documents": docs, "total": len(docs)}
+    limit = max(1, min(limit, 200))
+    offset = max(0, offset)
+    docs, total = store.list_documents(
+        doc_type=normalize_doc_type(doc_type), status=status,
+        q=q or None, sort=sort, order=order, limit=limit, offset=offset,
+    )
+    return {"documents": docs, "total": total, "limit": limit, "offset": offset}
 
 
 @router.delete("/knowledge/documents/{doc_id}")

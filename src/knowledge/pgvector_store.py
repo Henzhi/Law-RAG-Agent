@@ -193,48 +193,74 @@ class PgvectorStore:
         logger.info(f"pgvector 写入完成: {total} chunks, model={embedding_model}")
         return total
 
+    _SORT_COLUMNS = {"created_at", "updated_at", "title", "doc_type"}
+
     def list_documents(
-        self, doc_type: str | None = None, status: str | None = None
-    ) -> list[dict]:
-        """列出文档列表
+        self,
+        doc_type: str | None = None,
+        status: str | None = None,
+        q: str | None = None,
+        sort: str = "created_at",
+        order: str = "desc",
+        limit: int = 20,
+        offset: int = 0,
+    ) -> tuple[list[dict], int]:
+        """列出文档列表（分页 + 排序 + 关键词搜索）
 
         Args:
             doc_type: 按类型过滤，None=全部
             status: 效力状态过滤，None=全部；也可传逗号分隔的多个（如 "active,repealed"）
+            q: 关键词，同时匹配标题与文档块内容（大小写不敏感），None/空=不过滤
+            sort: 排序字段（白名单: created_at/updated_at/title/doc_type），非法值回退 created_at
+            order: "asc" / "desc"
+            limit: 每页条数（建议 ≤200）
+            offset: 跳过条数（配合前端无限滚动分页）
 
         Returns:
-            [{id, title, doc_type, source, effective_date, status, chunks, created_at}, ...]
+            (docs, total)
+            docs: [{id, title, doc_type, source, effective_date, status,
+                    created_at, updated_at, chunks}, ...]
         """
         self._ensure_connection()
         statuses = [s.strip() for s in (status or "").split(",") if s.strip()] if status else None
+
+        where: list[str] = []
+        params: list = []
+        if statuses:
+            placeholders = ", ".join(["%s"] * len(statuses))
+            where.append(f"d.status IN ({placeholders})")
+            params.extend(statuses)
+        if doc_type:
+            where.append("d.doc_type = %s")
+            params.append(doc_type)
+        if q and q.strip():
+            like = f"%{q.strip()}%"
+            where.append(
+                "(d.title ILIKE %s OR EXISTS (SELECT 1 FROM document_chunks dc "
+                "WHERE dc.doc_id = d.id AND dc.content ILIKE %s))"
+            )
+            params.extend([like, like])
+        where_sql = " AND ".join(where) if where else "TRUE"
+
+        col = sort if sort in self._SORT_COLUMNS else "created_at"
+        direction = "ASC" if (order or "").lower() == "asc" else "DESC"
+
         with self._conn.cursor() as cur:
-            if statuses:
-                placeholders = ", ".join(["%s"] * len(statuses))
-                status_clause = f"d.status IN ({placeholders})"
-                params: list = statuses
-            else:
-                status_clause = "TRUE"
-                params = []
-            if doc_type:
-                params.append(doc_type)
-                sql = f"""SELECT d.id, d.title, d.doc_type, d.source, d.effective_date,
-                             d.status, d.created_at, COUNT(dc.id) AS chunks
+            cur.execute(f"SELECT COUNT(DISTINCT d.id) FROM documents d WHERE {where_sql}", params)
+            total = int(cur.fetchone()[0])
+
+            sql = f"""SELECT d.id, d.title, d.doc_type, d.source, d.effective_date,
+                             d.status, d.created_at, d.updated_at, COUNT(dc.id) AS chunks
                       FROM documents d
                       LEFT JOIN document_chunks dc ON d.id = dc.doc_id
-                      WHERE {status_clause} AND d.doc_type = %s
+                      WHERE {where_sql}
                       GROUP BY d.id
-                      ORDER BY d.created_at DESC"""
-            else:
-                sql = f"""SELECT d.id, d.title, d.doc_type, d.source, d.effective_date,
-                             d.status, d.created_at, COUNT(dc.id) AS chunks
-                      FROM documents d
-                      LEFT JOIN document_chunks dc ON d.id = dc.doc_id
-                      WHERE {status_clause}
-                      GROUP BY d.id
-                      ORDER BY d.created_at DESC"""
-            cur.execute(sql, params)
+                      ORDER BY d.{col} {direction}
+                      LIMIT %s OFFSET %s"""
+            cur.execute(sql, params + [int(limit), int(offset)])
             rows = cur.fetchall()
-        return [
+
+        docs = [
             {
                 "id": str(row[0]),
                 "title": row[1],
@@ -243,10 +269,12 @@ class PgvectorStore:
                 "effective_date": str(row[4]) if row[4] else "",
                 "status": row[5],
                 "created_at": str(row[6]) if row[6] else "",
-                "chunks": int(row[7]),
+                "updated_at": str(row[7]) if row[7] else "",
+                "chunks": int(row[8]),
             }
             for row in rows
         ]
+        return docs, total
 
     def delete_document(self, doc_id: str) -> bool:
         """删除文档及其所有块（级联删除）

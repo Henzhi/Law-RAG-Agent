@@ -49,10 +49,15 @@ export const uploadDocument = async (file, docType, source, effectiveDate, statu
 export const getIngestionStatus = (taskId) =>
   fetch(`${BASE}/knowledge/status/${taskId}`, { headers: authHeaders() }).then(handleError)
 
-export const listDocuments = (docType, status) => {
+export const listDocuments = (opts = {}) => {
   const params = new URLSearchParams()
-  if (docType) params.set('doc_type', docType)
-  if (status) params.set('status', status)
+  if (opts.docType) params.set('doc_type', opts.docType)
+  if (opts.status) params.set('status', opts.status)
+  if (opts.q) params.set('q', opts.q)
+  if (opts.sort) params.set('sort', opts.sort)
+  if (opts.order) params.set('order', opts.order)
+  if (opts.limit != null) params.set('limit', opts.limit)
+  if (opts.offset != null) params.set('offset', opts.offset)
   const qs = params.toString()
   return fetch(`${BASE}/knowledge/documents${qs ? `?${qs}` : ''}`, { headers: authHeaders() }).then(handleError)
 }

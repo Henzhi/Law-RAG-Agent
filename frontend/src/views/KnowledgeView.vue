@@ -10,7 +10,11 @@
         <button class="btn-toggle-upload" @click="showUpload = !showUpload">
           {{ showUpload ? '收起上传' : '+ 上传文档' }}
         </button>
-        <button class="btn-refresh" @click="loadDocuments" :disabled="loading">刷新</button>
+        <router-link to="/crawl" class="btn-crawl-link">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M21 12a9 9 0 1 1-9-9"/><path d="M21 3v6h-6"/></svg>
+          在线更新
+        </router-link>
+        <button class="btn-refresh" @click="loadDocuments(true)" :disabled="loading">刷新</button>
       </div>
     </header>
 
@@ -78,75 +82,6 @@
       </form>
     </div>
 
-    <!-- 在线更新法律（爬虫） -->
-    <div class="crawl-section">
-      <div class="section-header">
-        <h3>在线更新法律</h3>
-        <span class="crawl-hint">数据源：国家法律法规数据库，增量去重，副本自动保存到 LawData/</span>
-      </div>
-      <div class="crawl-form">
-        <div class="form-row">
-          <label>
-            文档类型
-            <select v-model="crawlForm.doc_type">
-              <option v-for="(label, key) in crawlTypes" :key="key" :value="key">{{ label }}</option>
-            </select>
-          </label>
-          <label>
-            输出目标
-            <select v-model="crawlForm.store">
-              <option value="both">pgvector + LawData 副本（推荐）</option>
-              <option value="pg">仅 pgvector</option>
-              <option value="txt">仅 LawData 文本副本</option>
-            </select>
-          </label>
-          <label>
-            最多条数
-            <input v-model.number="crawlForm.limit" type="number" min="0" max="1000" />
-            <span class="field-hint">0 = 不限</span>
-          </label>
-          <label>
-            标题关键词
-            <input v-model="crawlForm.keyword" placeholder="空 = 该类型全部，如：数据安全法" />
-          </label>
-        </div>
-        <div class="crawl-options">
-          <label class="checkbox-label">
-            <input type="checkbox" v-model="crawlForm.force" /> 强制重爬（覆盖已存在文档）
-          </label>
-          <label class="checkbox-label">
-            <input type="checkbox" v-model="crawlForm.rebuild" /> 爬完后重建向量索引
-          </label>
-        </div>
-        <div class="crawl-actions">
-          <button class="btn-crawl" @click="handleCrawl" :disabled="crawlRunning || !Object.keys(crawlTypes).length">
-            {{ crawlRunning ? '爬取中...' : '开始增量更新' }}
-          </button>
-          <span v-if="crawlMsg" class="success">{{ crawlMsg }}</span>
-          <span v-if="crawlErr" class="error">{{ crawlErr }}</span>
-        </div>
-      </div>
-
-      <!-- 爬取任务进度 -->
-      <div v-if="crawlTask" class="crawl-task">
-        <div class="task-row">
-          <span class="task-id">任务 {{ crawlTask.task_id }}</span>
-          <span class="task-status" :class="crawlTask.status">{{ crawlStatusText(crawlTask.status) }}</span>
-        </div>
-        <div v-if="crawlTask.progress" class="crawl-progress">
-          <span>命中 {{ crawlTask.progress.total }}</span>
-          <span class="crawl-add">新增 {{ crawlTask.progress.added }}</span>
-          <span class="crawl-upd">更新 {{ crawlTask.progress.updated }}</span>
-          <span>跳过 {{ crawlTask.progress.skipped }}</span>
-          <span class="crawl-fail">失败 {{ crawlTask.progress.failed }}</span>
-        </div>
-        <div v-if="crawlTask.errors && crawlTask.errors.length" class="task-errors">
-          <div v-for="(e, i) in crawlTask.errors.slice(0, 10)" :key="i" class="task-error">- {{ e }}</div>
-          <div v-if="crawlTask.errors.length > 10" class="task-error">… 共 {{ crawlTask.errors.length }} 条错误</div>
-        </div>
-      </div>
-    </div>
-
     <!-- 批量上传任务进度 -->
     <div v-if="tasks.length" class="task-section">
       <h3>批量处理进度（{{ doneCount }}/{{ tasks.length }}）</h3>
@@ -163,64 +98,91 @@
       </div>
     </div>
 
-    <!-- 文档列表 -->
+    <!-- 文档浏览：目录树 + 分页无限滚动 -->
     <div class="documents-section">
-      <div class="section-header">
-        <h3>文档列表 <span class="count">({{ totalDocuments }})</span></h3>
-        <select v-model="filterType" @change="loadDocuments" class="filter-select">
-          <option value="">全部类型</option>
-          <option value="law">法律</option>
-          <option value="regulation">行政法规</option>
-          <option value="judicial_interpretation">司法解释</option>
-          <option value="local_regulation">地方性法规</option>
-          <option value="constitution">宪法</option>
-          <option value="supervision">监察法规</option>
-          <option value="case">典型案例</option>
-        </select>
-        <select v-model="filterStatus" @change="loadDocuments" class="filter-select">
-          <option value="">全部效力</option>
-          <option value="active">现行有效</option>
-          <option value="repealed">已废止</option>
-          <option value="revised">已修改</option>
-          <option value="pending">尚未生效</option>
-        </select>
+      <div class="doc-layout">
+        <!-- 左：目录树（懒加载，点击节点才加载该类型文档） -->
+        <aside class="doc-tree">
+          <div class="tree-title">文档目录</div>
+          <ul class="tree-list">
+            <li v-for="node in treeNodes" :key="node.key || '__all__'"
+                class="tree-node" :class="{ active: activeType === node.key }"
+                @click="selectType(node.key)">
+              <span class="tree-caret">{{ activeType === node.key ? '▾' : '▸' }}</span>
+              <span class="tree-label">{{ node.label }}</span>
+            </li>
+          </ul>
+        </aside>
+
+        <!-- 右：工具栏 + 表格 -->
+        <div class="doc-main">
+          <div class="toolbar">
+            <div class="search-box">
+              <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              <input v-model="searchQ" type="text" placeholder="搜索标题或正文关键词..."
+                     @input="onSearchInput" />
+              <button v-if="searchQ" class="search-clear" @click="clearSearch">×</button>
+            </div>
+            <select v-model="sortField" class="filter-select" @change="onSortChange" title="排序字段">
+              <option value="created_at">按创建时间</option>
+              <option value="updated_at">按修改时间</option>
+              <option value="title">按标题</option>
+              <option value="doc_type">按类型</option>
+            </select>
+            <button class="sort-dir-btn" @click="toggleSortOrder" :title="sortOrder === 'desc' ? '降序' : '升序'">
+              {{ sortOrder === 'desc' ? '↓ 降序' : '↑ 升序' }}
+            </button>
+            <select v-model="filterStatus" class="filter-select" @change="onFilterChange" title="效力状态">
+              <option value="">全部效力</option>
+              <option value="active">现行有效</option>
+              <option value="repealed">已废止</option>
+              <option value="revised">已修改</option>
+              <option value="pending">尚未生效</option>
+            </select>
+            <span class="total-count">共 {{ total }} 篇</span>
+          </div>
+
+          <div v-if="loading" class="loading">加载中...</div>
+          <div v-else-if="listError" class="empty">{{ listError }}</div>
+          <template v-else>
+            <table v-if="documents.length" class="doc-table">
+              <thead>
+                <tr>
+                  <th>文档名称</th>
+                  <th>类型</th>
+                  <th>效力</th>
+                  <th>块数</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="doc in documents" :key="doc.id">
+                  <td class="title-cell" :title="doc.title">{{ doc.title }}</td>
+                  <td><span class="type-badge" :class="doc.doc_type">{{ typeLabel(doc.doc_type) }}</span></td>
+                  <td><span class="status-badge" :class="doc.status || 'active'">{{ statusLabel(doc.status) }}</span></td>
+                  <td class="num-cell">{{ doc.chunks }}</td>
+                  <td class="date-cell">{{ formatDate(doc.updated_at || doc.created_at) }}</td>
+                  <td class="actions-cell">
+                    <button class="btn-view" @click="viewDocument(doc)" :disabled="viewing === doc.id">
+                      {{ viewing === doc.id ? '加载中...' : '查看' }}
+                    </button>
+                    <button class="btn-delete" @click="confirmDelete(doc)" :disabled="deleting === doc.id">
+                      {{ deleting === doc.id ? '删除中...' : '删除' }}
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="empty">暂无匹配的文档，可上传或在线更新法律</div>
+            <div ref="docTableWrapEl" class="load-more">
+              <span v-if="loadingMore" class="view-more-loading">加载中...</span>
+              <span v-else-if="hasMore" class="load-more-hint">向下滚动加载更多（{{ documents.length }}/{{ total }}）</span>
+              <span v-else-if="documents.length" class="load-more-done">已全部加载（{{ total }} 篇）</span>
+            </div>
+          </template>
+        </div>
       </div>
-
-      <div v-if="loading" class="loading">加载中...</div>
-
-      <table v-else-if="documents.length > 0" class="doc-table">
-        <thead>
-          <tr>
-            <th>文档名称</th>
-            <th>类型</th>
-            <th>效力</th>
-            <th>来源</th>
-            <th>块数</th>
-            <th>上传时间</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="doc in documents" :key="doc.id">
-            <td class="title-cell" :title="doc.title">{{ doc.title }}</td>
-            <td><span class="type-badge" :class="doc.doc_type">{{ typeLabel(doc.doc_type) }}</span></td>
-            <td><span class="status-badge" :class="doc.status || 'active'">{{ statusLabel(doc.status) }}</span></td>
-            <td class="source-cell">{{ doc.source || '-' }}</td>
-            <td class="num-cell">{{ doc.chunks }}</td>
-            <td class="date-cell">{{ formatDate(doc.created_at) }}</td>
-            <td class="actions-cell">
-              <button class="btn-view" @click="viewDocument(doc)" :disabled="viewing === doc.id">
-                {{ viewing === doc.id ? '加载中...' : '查看' }}
-              </button>
-              <button class="btn-delete" @click="confirmDelete(doc)" :disabled="deleting === doc.id">
-                {{ deleting === doc.id ? '删除中...' : '删除' }}
-              </button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
-
-      <div v-else class="empty">暂无文档，请上传法律文件开始构建知识库</div>
     </div>
 
     <!-- 删除确认弹窗 -->
@@ -274,27 +236,102 @@
 
 <script setup>
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
-import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getDocumentChunks, listCrawlTypes, startCrawl, getCrawlStatus } from '../api'
+import { uploadDocument, getIngestionStatus, listDocuments, deleteDocument, getDocumentChunks } from '../api'
 
-// --- 文档列表 ---
+// --- 文档列表（目录树 + 分页无限滚动） ---
+const PAGE_SIZE = 20   // 默认每页 20 条
 const documents = ref([])
+const total = ref(0)
 const loading = ref(false)
-const filterType = ref('')
+const loadingMore = ref(false)
+const hasMore = ref(false)
+const listError = ref('')
+const docTableWrapEl = ref(null)
+const activeType = ref('')        // '' = 全部文档（目录树当前节点）
 const filterStatus = ref('')
-const totalDocuments = computed(() => documents.value.length)
+const sortField = ref('created_at')
+const sortOrder = ref('desc')
+const searchQ = ref('')
+let searchTimer = null
 
-async function loadDocuments() {
-  loading.value = true
+// 目录树节点（一级=类型，展开时才加载该类型文档）
+const treeNodes = [
+  { key: '', label: '全部文档' },
+  { key: 'law', label: '法律' },
+  { key: 'regulation', label: '行政法规' },
+  { key: 'judicial_interpretation', label: '司法解释' },
+  { key: 'local_regulation', label: '地方性法规' },
+  { key: 'constitution', label: '宪法' },
+  { key: 'supervision', label: '监察法规' },
+  { key: 'case', label: '典型案例' },
+]
+
+async function loadDocuments(reset = true) {
+  if (reset) {
+    documents.value = []
+    if (loading.value) return
+  } else if (loading.value || loadingMore.value) {
+    return
+  }
+  const offset = reset ? 0 : documents.value.length
+  if (reset) loading.value = true
+  else loadingMore.value = true
+  listError.value = ''
   try {
-    const res = await listDocuments(
-      filterType.value || undefined,
-      filterStatus.value || undefined,
-    )
-    documents.value = res.documents || []
+    const res = await listDocuments({
+      docType: activeType.value || undefined,
+      status: filterStatus.value || undefined,
+      q: searchQ.value.trim() || undefined,
+      sort: sortField.value,
+      order: sortOrder.value,
+      limit: PAGE_SIZE,
+      offset,
+    })
+    const docs = res.documents || []
+    documents.value = reset ? docs : documents.value.concat(docs)
+    total.value = res.total || 0
+    hasMore.value = documents.value.length < total.value
   } catch (e) {
+    listError.value = e.message
     console.error('加载文档列表失败:', e)
   } finally {
     loading.value = false
+    loadingMore.value = false
+  }
+}
+
+// 目录树：切换节点（懒加载该类型第一页）
+function selectType(key) {
+  if (activeType.value === key) return
+  activeType.value = key
+  loadDocuments(true)
+}
+
+// 状态 / 排序变化：重置分页
+function onFilterChange() { loadDocuments(true) }
+function onSortChange() { loadDocuments(true) }
+function toggleSortOrder() {
+  sortOrder.value = sortOrder.value === 'desc' ? 'asc' : 'desc'
+  loadDocuments(true)
+}
+
+// 搜索（防抖 400ms）
+function onSearchInput() {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => loadDocuments(true), 400)
+}
+function clearSearch() {
+  searchQ.value = ''
+  loadDocuments(true)
+}
+
+// 无限滚动：表格触底时加载下一页
+function onDocScroll() {
+  const el = docTableWrapEl.value
+  if (!el) return
+  const rect = el.getBoundingClientRect()
+  if (rect.bottom <= window.innerHeight + 80 && hasMore.value) {
+    loadDocuments(false)
   }
 }
 
@@ -379,7 +416,7 @@ async function doDelete() {
   try {
     await deleteDocument(id)
     deleteTarget.value = null
-    await loadDocuments()
+    await loadDocuments(true)
   } catch (e) {
     alert('删除失败: ' + e.message)
   } finally {
@@ -491,71 +528,11 @@ function pollTask(t) {
       t.progress = s.progress || 0
       if (s.status === 'done' || s.status === 'failed') {
         clearInterval(timer)
-        if (s.status === 'done') loadDocuments() // 全部完成后刷新一次
+        if (s.status === 'done') loadDocuments(true) // 全部完成后刷新一次
         else t.error = s.error || '处理失败'
       }
     } catch { /* ignore */ }
   }, 2000)
-}
-
-// --- 在线更新法律（爬虫：国家法律法规数据库，增量） ---
-const crawlTypes = ref({})
-const crawlForm = ref({ doc_type: 'law', store: 'both', limit: 50, keyword: '', force: false, rebuild: false })
-const crawlTask = ref(null)
-const crawlRunning = ref(false)
-const crawlMsg = ref('')
-const crawlErr = ref('')
-let crawlTimer = null
-
-async function loadCrawlTypes() {
-  try {
-    const res = await listCrawlTypes()
-    crawlTypes.value = res.types || {}
-  } catch (e) {
-    console.error('加载爬取类型失败:', e)
-  }
-}
-
-async function handleCrawl() {
-  crawlRunning.value = true
-  crawlMsg.value = ''
-  crawlErr.value = ''
-  try {
-    const res = await startCrawl(crawlForm.value)
-    crawlTask.value = {
-      task_id: res.task_id,
-      status: res.status,
-      progress: { total: 0, added: 0, updated: 0, skipped: 0, failed: 0 },
-      errors: [],
-    }
-    crawlMsg.value = '任务已提交，正在增量更新...'
-    pollCrawl()
-  } catch (e) {
-    crawlErr.value = e.message
-    crawlRunning.value = false
-  }
-}
-
-function pollCrawl() {
-  if (crawlTimer) clearInterval(crawlTimer)
-  crawlTimer = setInterval(async () => {
-    if (!crawlTask.value || !crawlTask.value.task_id) return
-    try {
-      const s = await getCrawlStatus(crawlTask.value.task_id)
-      crawlTask.value = { ...crawlTask.value, ...s }
-      if (s.status === 'done' || s.status === 'error' || s.status === 'failed') {
-        clearInterval(crawlTimer)
-        crawlTimer = null
-        crawlRunning.value = false
-        crawlMsg.value = s.status === 'done' ? '更新完成，文档列表已刷新' : '更新失败'
-        if (s.status === 'done') loadDocuments()
-      }
-    } catch { /* 忽略瞬时错误，下轮重试 */ }
-  }, 3000)
-}
-
-function crawlStatusText(s) {
-  return { pending: '等待中', running: '爬取中', done: '已完成', error: '失败' }[s] || s
 }
 
 // --- 工具函数 ---
@@ -593,17 +570,18 @@ function formatDate(d) {
 }
 
 onMounted(() => {
-  loadDocuments()
-  loadCrawlTypes()
+  loadDocuments(true)
+  window.addEventListener('scroll', onDocScroll)
 })
 
 onBeforeUnmount(() => {
-  if (crawlTimer) clearInterval(crawlTimer)
+  if (searchTimer) clearTimeout(searchTimer)
+  window.removeEventListener('scroll', onDocScroll)
 })
 </script>
 
 <style scoped>
-.knowledge-page { max-width: 960px; margin: 0 auto; padding: 24px; }
+.knowledge-page { max-width: 1440px; margin: 0 auto; padding: 24px; }
 
 /* Header */
 .page-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
@@ -612,6 +590,8 @@ onBeforeUnmount(() => {
 .btn-back { background: none; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 7px 14px; cursor: pointer; color: var(--color-text-secondary); font-size: 14px; display: inline-flex; align-items: center; gap: 6px; transition: all var(--transition); }
 .btn-back:hover { background: var(--color-sidebar-hover); color: var(--color-primary); }
 .btn-toggle-upload { padding: 8px 18px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); font-size: 14px; cursor: pointer; }
+.btn-crawl-link { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; background: var(--color-surface-soft); border: 1px solid var(--color-border); border-radius: var(--radius); color: var(--color-text-secondary); font-size: 14px; text-decoration: none; transition: all var(--transition); }
+.btn-crawl-link:hover { color: var(--color-primary); border-color: var(--color-primary-border); background: var(--color-primary-light); }
 .btn-refresh { background: none; border: 1px solid var(--color-border); border-radius: var(--radius); padding: 6px 14px; cursor: pointer; color: var(--color-text-muted); font-size: 14px; }
 .btn-refresh:disabled { opacity: 0.5; }
 
@@ -641,24 +621,6 @@ onBeforeUnmount(() => {
 .error { color: var(--color-error); font-size: 13px; }
 .success { color: #059669; font-size: 13px; }
 
-/* Crawl（在线更新法律） */
-.crawl-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
-.crawl-hint { font-size: 13px; color: var(--color-text-muted); }
-.crawl-form { display: flex; flex-direction: column; gap: 14px; margin-top: 4px; }
-.crawl-options { display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px; color: var(--color-text-secondary); }
-.checkbox-label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-.checkbox-label input { accent-color: var(--color-primary); }
-.crawl-actions { display: flex; align-items: center; gap: 12px; }
-.field-hint { color: var(--color-text-muted); font-size: 12px; }
-.btn-crawl { padding: 10px 24px; background: var(--color-primary); color: #fff; border: none; border-radius: var(--radius); font-size: 15px; cursor: pointer; }
-.btn-crawl:disabled { opacity: 0.5; cursor: not-allowed; }
-.crawl-task { margin-top: 16px; border-top: 1px dashed var(--color-border); padding-top: 14px; display: flex; flex-direction: column; gap: 10px; }
-.crawl-progress { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: var(--color-text-secondary); }
-.crawl-add { color: #059669; }
-.crawl-upd { color: var(--color-primary); }
-.crawl-fail { color: var(--color-error); }
-.task-errors { display: flex; flex-direction: column; gap: 2px; }
-
 /* Task progress */
 .task-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; margin-bottom: 24px; }
 .task-section h3 { margin-bottom: 12px; font-size: 16px; }
@@ -675,19 +637,48 @@ onBeforeUnmount(() => {
 .progress-text { font-size: 12px; color: var(--color-text-muted); text-align: right; }
 
 /* Documents list */
-.documents-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 24px; }
+.documents-section { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); padding: 20px; }
 .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .section-header h3 { font-size: 18px; }
 .count { color: var(--color-text-muted); font-size: 14px; font-weight: normal; }
-.filter-select { padding: 6px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 13px; background: var(--color-surface-soft); color: var(--color-text); }
+
+/* 目录树 + 列表两栏布局 */
+.doc-layout { display: flex; gap: 20px; align-items: flex-start; }
+.doc-tree { width: 180px; flex-shrink: 0; border-right: 1px solid var(--color-border); padding-right: 16px; }
+.tree-title { font-size: 12px; font-weight: 600; color: var(--color-text-muted); margin-bottom: 10px; letter-spacing: 0.5px; }
+.tree-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.tree-node { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-radius: var(--radius); cursor: pointer; font-size: 14px; color: var(--color-text-secondary); transition: background var(--transition), color var(--transition); }
+.tree-node:hover { background: var(--color-surface-hover); color: var(--color-text); }
+.tree-node.active { background: var(--color-primary-light); color: var(--color-primary); font-weight: 500; }
+.tree-caret { font-size: 10px; color: var(--color-text-muted); width: 12px; text-align: center; flex-shrink: 0; }
+.tree-node.active .tree-caret { color: var(--color-primary); }
+
+/* 右侧主区 */
+.doc-main { flex: 1; min-width: 0; }
+.toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+.search-box { position: relative; flex: 1; min-width: 200px; }
+.search-icon { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--color-text-muted); pointer-events: none; }
+.search-box input { width: 100%; padding: 8px 30px 8px 32px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 14px; background: var(--color-surface-soft); color: var(--color-text); outline: none; transition: border-color var(--transition), box-shadow var(--transition); }
+.search-box input:focus { border-color: var(--color-primary); box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.12); }
+.search-clear { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); border: none; background: none; color: var(--color-text-muted); font-size: 16px; cursor: pointer; padding: 2px 6px; }
+.search-clear:hover { color: var(--color-text); }
+.filter-select { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 13px; background: var(--color-surface-soft); color: var(--color-text); cursor: pointer; }
+.sort-dir-btn { padding: 8px 12px; border: 1px solid var(--color-border); border-radius: var(--radius); font-size: 13px; background: var(--color-surface-soft); color: var(--color-text-secondary); cursor: pointer; white-space: nowrap; }
+.sort-dir-btn:hover { color: var(--color-primary); border-color: var(--color-primary-border); }
+.total-count { font-size: 13px; color: var(--color-text-muted); white-space: nowrap; }
+
 .loading { text-align: center; color: var(--color-text-muted); padding: 32px; }
 .empty { text-align: center; color: var(--color-text-muted); padding: 48px 16px; font-size: 14px; }
+
+/* 无限滚动加载指示 */
+.load-more { text-align: center; padding: 14px 0 4px; font-size: 13px; color: var(--color-text-muted); }
+.load-more-done { color: var(--color-success); }
 
 .doc-table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .doc-table th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--color-border); color: var(--color-text-muted); font-weight: 600; font-size: 13px; white-space: nowrap; }
 .doc-table td { padding: 12px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
 .doc-table tr:hover { background: var(--color-primary-light); }
-.title-cell { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.title-cell { max-width: 420px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
 .source-cell { max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-muted); }
 .num-cell { text-align: center; }
 .date-cell { color: var(--color-text-muted); white-space: nowrap; font-size: 13px; }
