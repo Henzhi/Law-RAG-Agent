@@ -25,30 +25,56 @@ STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 logger = logging.getLogger(__name__)
 
 
-async def _faq_cleanup_loop():
-    """后台定时任务：周期性清理过期 FAQ 缓存（失败不影响主流程，下轮重试）"""
+async def _cleanup_loop():
+    """后台定时任务：周期性清理过期的 FAQ 缓存与对话记忆。
+
+    - 懒初始化 + 失败重试：PG 未就绪时不永久失效，每轮都会重试连接
+    - 单个组件失败不影响其他组件，下轮继续
+    - FAQ 缓存仅 pgvector 后端需要主动清理；Redis 后端原生 TTL 自动过期
+    """
     import asyncio
-    from src.config import PG_CONN, FAQ_CLEAN_INTERVAL_HOURS
-    from src.memory.faq_cache import FAQCache
+    from src.config import PG_CONN, FAQ_CLEAN_INTERVAL_HOURS, FAQ_CACHE_BACKEND
 
     interval = max(1, FAQ_CLEAN_INTERVAL_HOURS) * 3600
-    cache = None
-    try:
-        # clean_expired 不依赖 embedder，仅用 conn_string 即可
-        cache = FAQCache(conn_string=PG_CONN, embedder=None)
-    except Exception as e:
-        logger.warning(f"FAQ 清理任务初始化失败（pgvector 未就绪？）: {e}")
+    faq_cache = None
+    memory_mgr = None
 
     while True:
         await asyncio.sleep(interval)
-        if cache is None:
-            continue
-        try:
-            n = cache.clean_expired()
-            if n:
-                logger.info(f"FAQ 缓存定时清理: {n} 条过期")
-        except Exception as e:
-            logger.warning(f"FAQ 缓存定时清理失败: {e}")
+
+        # FAQ 缓存（pgvector 后端才需要主动清理）
+        if FAQ_CACHE_BACKEND != "pg":
+            pass
+        elif faq_cache is None:
+            try:
+                from src.memory.faq_cache import FAQCache
+                faq_cache = FAQCache(conn_string=PG_CONN, embedder=None)
+                logger.info("FAQ 清理任务初始化成功")
+            except Exception as e:
+                logger.warning(f"FAQ 清理任务初始化失败，下轮重试: {e}")
+        else:
+            try:
+                n = faq_cache.clean_expired()
+                if n:
+                    logger.info(f"FAQ 缓存定时清理: {n} 条过期")
+            except Exception as e:
+                logger.warning(f"FAQ 缓存定时清理失败: {e}")
+
+        # 对话记忆：清理过期摘要（TTL 30 天），防止表无限膨胀
+        if memory_mgr is None:
+            try:
+                from src.memory.conversation import ConversationMemoryManager
+                memory_mgr = ConversationMemoryManager(conn_string=PG_CONN)
+                logger.info("对话记忆清理任务初始化成功")
+            except Exception as e:
+                logger.warning(f"对话记忆清理任务初始化失败，下轮重试: {e}")
+        else:
+            try:
+                n = memory_mgr.clean_expired()
+                if n:
+                    logger.info(f"对话记忆定时清理: {n} 条过期")
+            except Exception as e:
+                logger.warning(f"对话记忆定时清理失败: {e}")
 
 
 @asynccontextmanager
@@ -65,8 +91,8 @@ async def lifespan(app: FastAPI):
         get_engine()
         logger.info("RAG 引擎已预热")
 
-    # 后台任务：FAQ 过期缓存定时清理
-    cleanup_task = asyncio.create_task(_faq_cleanup_loop())
+    # 后台任务：过期 FAQ 缓存 + 过期对话记忆定时清理
+    cleanup_task = asyncio.create_task(_cleanup_loop())
     try:
         yield
     finally:

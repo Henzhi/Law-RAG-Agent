@@ -18,6 +18,7 @@ from src.config import (
     PG_CONN,
     ADJACENT_ENABLED, ADJACENT_WINDOW,
     HYBRID_ENABLED, HYBRID_RRF_K, HYBRID_BM25_WEIGHT,
+    FAQ_CACHE_BACKEND, REDIS_URL,
 )
 from src.llm.adapter import LLMAdapter, EmbeddingAdapter
 from src.llm.factory import create_llm_backend
@@ -144,12 +145,25 @@ def _create_memory_manager(llm, embedder):
 
 
 def _create_faq_cache(embedder):
-    """创建 FAQ 语义缓存管理器（纯 PG，需要 pgvector 环境）"""
+    """创建 FAQ 语义缓存管理器
+
+    按 FAQ_CACHE_BACKEND 选择后端：
+      - redis（默认）：Redis Stack，向量检索 + 原生 TTL，无需后台清理
+      - pg：pgvector，定时清理（无 Redis 环境的回退方案）
+    """
     try:
-        from src.memory.faq_cache import FAQCache
-        return FAQCache(conn_string=PG_CONN, embedder=embedder)
+        if FAQ_CACHE_BACKEND == "pg":
+            from src.memory.faq_cache import FAQCache
+            logger.info("FAQ 缓存后端: pgvector")
+            return FAQCache(conn_string=PG_CONN, embedder=embedder)
+
+        from src.memory.faq_cache_redis import FAQCacheRedis
+        cache = FAQCacheRedis(redis_url=REDIS_URL, embedder=embedder)
+        cache.ensure_index()
+        logger.info(f"FAQ 缓存后端: Redis Stack ({REDIS_URL})")
+        return cache
     except Exception as e:
-        logger.warning(f"FAQ缓存初始化失败（pgvector 未就绪？）: {e}")
+        logger.warning(f"FAQ缓存初始化失败: {e}")
         return None
 
 

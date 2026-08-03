@@ -125,6 +125,56 @@ class TestGraphMemoryIntegration:
         assert "user_id" in AgentState.__annotations__
 
 
+class TestCleanExpired:
+    """过期记忆清理（后台定时任务调用）"""
+
+    def test_constructor_allows_none_deps(self):
+        """清理场景:embedder/llm 可传 None,避免清理任务加载模型"""
+        import inspect
+        from src.memory.conversation import ConversationMemoryManager
+        sig = inspect.signature(ConversationMemoryManager.__init__)
+        assert sig.parameters["embedder"].default is None
+        assert sig.parameters["llm"].default is None
+
+    def test_clean_expired_executes_delete(self):
+        from unittest.mock import MagicMock
+        from src.memory.conversation import ConversationMemoryManager
+
+        mgr = object.__new__(ConversationMemoryManager)
+        fake_conn = MagicMock()
+        # 让 with cursor() 进入同一个 mock,rowcount 才能生效
+        fake_cursor = MagicMock()
+        fake_cursor.__enter__.return_value = fake_cursor
+        fake_cursor.rowcount = 3
+        fake_conn.cursor.return_value = fake_cursor
+        mgr._conn = fake_conn
+        mgr._conn_string = "fake"
+        mgr._schema_ready = True
+
+        count = mgr.clean_expired()
+        assert count == 3
+        # 验证执行的是过期删除语句(最后一次 execute 调用)
+        executed = fake_cursor.execute.call_args[0][0]
+        assert "DELETE FROM conversation_memories" in executed
+        assert "expires_at < NOW()" in executed
+
+    def test_clean_expired_zero(self):
+        from unittest.mock import MagicMock
+        from src.memory.conversation import ConversationMemoryManager
+
+        mgr = object.__new__(ConversationMemoryManager)
+        fake_conn = MagicMock()
+        fake_cursor = MagicMock()
+        fake_cursor.__enter__.return_value = fake_cursor
+        fake_cursor.rowcount = 0
+        fake_conn.cursor.return_value = fake_cursor
+        mgr._conn = fake_conn
+        mgr._conn_string = "fake"
+        mgr._schema_ready = True
+
+        assert mgr.clean_expired() == 0
+
+
 class TestImportanceEstimation:
     """记忆重要度预筛（按轮数分档）"""
 

@@ -110,8 +110,8 @@ uv sync
 # 2) 准备环境变量（按需修改 JWT_SECRET 等）
 cp .env.example .env
 
-# 3) 启动 PostgreSQL + pgvector（纯 PG 架构，无 FAISS）
-docker compose up -d db
+# 3) 启动 PostgreSQL + pgvector（检索/记忆）+ Redis Stack（FAQ 语义缓存，默认后端）
+docker compose up -d db redis
 
 # 4) 导入法律数据（两种方式任选）
 #    a) 知识库上传界面直接上传文档（按类型自动切分入库）
@@ -121,6 +121,9 @@ uv run python scripts/crawl.py --doc-type all --limit 50 --store pg
 # 5) 启动 API 服务（默认 http://localhost:8000）
 uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000
 ```
+
+> FAQ 缓存后端说明：默认 `FAQ_CACHE_BACKEND=redis`（Redis Stack，向量检索 + 原生 TTL 自动过期）。
+> 无 Redis 环境可设 `FAQ_CACHE_BACKEND=pg` 回退到 pgvector（需定时清理任务兜底）。
 
 ### 2. 前端构建
 

@@ -168,6 +168,13 @@ FAQ_CLEAN_INTERVAL_HOURS = _safe_int("FAQ_CLEAN_INTERVAL_HOURS", 24)
 # FAQ 缓存 TTL（小时）：超过即销毁；命中缓存时自动顺延刷新（热问题续命）
 FAQ_TTL_HOURS = _safe_int("FAQ_TTL_HOURS", 1)
 
+# FAQ 缓存后端: redis（Redis Stack，向量检索 + 原生 TTL）| pg（pgvector，定时清理）
+# 推荐 redis：TTL 自动过期，无需后台清理任务；pg 为无 Redis 环境的回退方案
+FAQ_CACHE_BACKEND = os.getenv("FAQ_CACHE_BACKEND", "redis").lower()
+
+# Redis 连接串（Redis Stack：redis:// 或 rediss://）
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+
 # ---------------------------------------------------------------------------
 # pgvector
 # ---------------------------------------------------------------------------

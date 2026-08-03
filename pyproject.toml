@@ -37,6 +37,7 @@ dependencies = [
     "sentence-transformers>=3.0",
     "pgvector>=0.5.0",
     "psycopg2-binary>=2.9",
+    "redis>=5.0",                # FAQ 语义缓存 Redis Stack 后端（向量检索 + 原生 TTL）
     "openai>=2.47.0",
     "pymupdf>=1.28.0",
     "python-docx>=1.2.0",

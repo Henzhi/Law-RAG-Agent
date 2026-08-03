@@ -32,6 +32,9 @@
 | 07-24 | 3c | 步骤3审查 — 多维度测试：Prompt未格式化修复 + 代码去重 + 封装修复 + 215测试 ✅ |
 | 07-23 | 1f | 三次审查 — 多维度安全审计 + 隐藏Bug检测 + 6项修复 ✅ |
 | 08-03 | 9 | 记忆+上下文窗口升级 — save_memory幂等接线(会话保存异步固化) + importance预筛 + 指数时间衰减 + TokenBudget接入Agent/RAG动态窗口 + 12测试 (361 total) ✅ |
+| 08-03 | 9b | Ollama num_ctx 下发 — OLLAMA_NUM_CTX 环境变量 + 自动取模型声明窗口 + 4测试 ✅ |
+| 08-03 | 9c | 过期清理修复 — 清理循环失败重试(不再永久失效) + 对话记忆 clean_expired + 3测试 ✅ |
+| 08-03 | 10 | FAQ缓存迁Redis Stack — FAQCacheRedis(向量检索+原生TTL+Set级联失效) + FAQ_CACHE_BACKEND开关 + docker-compose redis服务 + 16测试 (384 total) ✅ |
 
 ---
 

@@ -82,9 +82,16 @@ class ConversationMemoryManager:
     def __init__(
         self,
         conn_string: str,
-        embedder,   # EmbeddingAdapter
-        llm,        # LLMAdapter
+        embedder=None,  # EmbeddingAdapter | None（清理路径可传 None）
+        llm=None,       # LLMAdapter | None（清理路径可传 None）
     ):
+        """记忆管理器。
+
+        Args:
+            conn_string: PG 连接串
+            embedder: 用于摘要向量化；仅执行 clean_expired 的清理场景可为 None
+            llm: 用于摘要生成；仅执行 clean_expired 的清理场景可为 None
+        """
         self._embedder = embedder
         self._llm = llm
         # 保存原始连接串用于重连 — conn.dsn 不保证回传密码，重连可能失败
@@ -139,6 +146,24 @@ class ConversationMemoryManager:
     def close(self):
         """关闭数据库连接"""
         self._conn.close()
+
+    @_locked
+    def clean_expired(self) -> int:
+        """清理过期的对话记忆（expires_at < NOW()）。
+
+        检索时已通过 WHERE expires_at > NOW() 过滤过期行，此处负责真正
+        删除累积的过期记录，避免表无限膨胀。由后台定时任务周期调用。
+        """
+        self._ensure_connection()
+        with self._conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM conversation_memories WHERE expires_at < NOW()"
+            )
+            count = cur.rowcount
+        self._conn.commit()
+        if count:
+            logger.info(f"对话记忆清理: {count} 条过期")
+        return count
 
     # ------------------------------------------------------------------
     # 记忆写入

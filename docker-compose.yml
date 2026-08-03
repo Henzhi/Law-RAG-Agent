@@ -17,6 +17,20 @@ services:
       timeout: 3s
       retries: 5
 
+  redis:
+    image: redis/redis-stack-server:latest
+    container_name: lawrag-redis
+    ports:
+      # 6381 避开本机 VMware NAT / WSL 对 6379 的抢占；容器内网仍用 6379
+      - "6381:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   app:
     build: .
     container_name: lawrag-app
@@ -37,11 +51,16 @@ services:
       - ADJACENT_ENABLED=true
       - RETRIEVAL_SIM_THRESHOLD=${RETRIEVAL_SIM_THRESHOLD:-0.4}
       - AGENT_ENABLED=false
+      - FAQ_CACHE_BACKEND=${FAQ_CACHE_BACKEND:-redis}
+      - REDIS_URL=redis://redis:6379
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
 volumes:
   pgdata:
+  redisdata:
