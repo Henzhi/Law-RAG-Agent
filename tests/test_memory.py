@@ -125,6 +125,50 @@ class TestGraphMemoryIntegration:
         assert "user_id" in AgentState.__annotations__
 
 
+class TestSaveMemoryJsonb:
+    """回归：save_memory 写入 entities(JSONB) 时需序列化，不能直接传 dict
+
+    复现：会话保存异步固化记忆时 ProgrammingError: can't adapt type 'dict'。
+    """
+
+    def test_entities_serialized_to_json_string(self):
+        import json as _json
+        from unittest.mock import MagicMock, patch
+        from src.memory.conversation import ConversationMemoryManager
+
+        import threading
+        with patch("src.memory.conversation.psycopg2.connect") as mock_connect:
+            fake_conn = MagicMock()
+            fake_cursor = MagicMock()
+            fake_cursor.__enter__.return_value = fake_cursor
+            fake_cursor.fetchone.return_value = None  # 幂等检查:无已有记录
+            fake_conn.cursor.return_value = fake_cursor
+            mock_connect.return_value = fake_conn
+
+            # 绕过 __init__(register_vector 需要真实连接)
+            mgr = object.__new__(ConversationMemoryManager)
+            mgr._embedder = MagicMock()
+            mgr._llm = MagicMock()
+            mgr._conn = fake_conn
+            mgr._conn_string = "fake"
+            mgr._lock = threading.Lock()
+            mgr._schema_ready = True  # 跳过 schema 迁移
+            mgr._embedder.embed_query.return_value = [0.1] * 1024
+            mgr._llm.chat.return_value = "案件类型: 劳动争议\n涉及法律: 劳动法\n关键事实: 试用期被辞退\n已回答: 无\n未解决: 赔偿金额"
+
+            messages = [{"role": "user", "content": f"问题{i}"} for i in range(8)]
+            mgr.save_memory("user1", "session1", messages)
+
+            # 取 INSERT 的参数
+            insert_sql, params = fake_cursor.execute.call_args_list[-1][0]
+            assert "::jsonb" in insert_sql  # entities 显式 cast jsonb
+            entities_param = params[4]
+            # 必须是可被 psycopg2 适配的类型(JSON 字符串),而非 dict
+            assert not isinstance(entities_param, dict)
+            assert isinstance(entities_param, str)
+            _json.loads(entities_param)  # 且是合法 JSON
+
+
 class TestCleanExpired:
     """过期记忆清理（后台定时任务调用）"""
 

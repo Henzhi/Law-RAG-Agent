@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from functools import wraps
@@ -253,7 +254,7 @@ class ConversationMemoryManager:
             cur.execute(
                 "INSERT INTO conversation_memories "
                 "(user_id, session_id, summary, summary_embed, entities, message_count, importance) "
-                "VALUES (%s, %s, %s, %s::halfvec, %s, %s, %s) "
+                "VALUES (%s, %s, %s, %s::halfvec, %s::jsonb, %s, %s) "
                 "ON CONFLICT (user_id, session_id) "
                 "DO UPDATE SET summary = EXCLUDED.summary, "
                 "  summary_embed = EXCLUDED.summary_embed, "
@@ -266,7 +267,7 @@ class ConversationMemoryManager:
                     session_id,
                     summary,
                     summary_vec,
-                    entities,
+                    json.dumps(entities or {}, ensure_ascii=False),
                     len(messages),
                     importance,
                     MEMORY_TTL_DAYS,
