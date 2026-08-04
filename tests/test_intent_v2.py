@@ -94,11 +94,31 @@ class TestCapabilityQuery:
         assert is_capability_query("你能干哪些事") is True
         assert is_capability_query("你能帮我做什么") is True
 
+    def test_capability_more_variants(self):
+        """宽松兜底：你/您 + 能力词 + 无法律词 即视为能力问句"""
+        from src.rag.intent import is_capability_query
+        assert is_capability_query("你可以做什么") is True
+        assert is_capability_query("你会啥") is True
+        assert is_capability_query("你有什么用") is True
+        assert is_capability_query("你能帮我干什么") is True
+        assert is_capability_query("你能提供什么帮助") is True
+        assert is_capability_query("你是做什么的") is True
+        assert is_capability_query("你都能干嘛") is True
+        assert is_capability_query("你擅长什么") is True
+
     def test_not_capability(self):
         from src.rag.intent import is_capability_query
         assert is_capability_query("工伤怎么认定") is False
         assert is_capability_query("你好") is False
         assert is_capability_query("") is False
+
+    def test_capability_not_misfire(self):
+        """宽松兜底不能误伤：非"你"主语、或含法律关键词的问题"""
+        from src.rag.intent import is_capability_query
+        assert is_capability_query("我能做什么") is False        # 问自己，非 AI
+        assert is_capability_query("打架能做什么") is False      # 句中"能做什么"，非能力问句
+        assert is_capability_query("你能帮我查一下劳动法") is False  # 含法律关键词 → 法律问题
+        assert is_capability_query("你能帮我看看合同吗") is False
 
     def test_capability_classified_casual(self):
         """能力问句应被意图识别为闲聊(不检索)"""
