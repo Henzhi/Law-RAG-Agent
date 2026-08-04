@@ -106,6 +106,22 @@ class TestCapabilityQuery:
         assert is_capability_query("你都能干嘛") is True
         assert is_capability_query("你擅长什么") is True
 
+    def test_capability_punctuation_and_particles(self):
+        """回归：带问号/语气词的问法也必须识别(结构化解耦正则)"""
+        from src.rag.intent import is_capability_query
+        assert is_capability_query("你会做什么?") is True
+        assert is_capability_query("你会做什么？") is True
+        assert is_capability_query("你会做什么吗") is True
+        assert is_capability_query("你会做什么呀") is True
+        assert is_capability_query("你会做些什么") is True
+        assert is_capability_query("你能干些啥") is True
+        assert is_capability_query("你都会啥") is True
+        assert is_capability_query("你会啥呀") is True
+        assert is_capability_query("你能帮到我什么") is True
+        assert is_capability_query("你可以帮忙做些什么呢") is True
+        assert is_capability_query("你有啥用处") is True
+        assert is_capability_query("你有什么能力吗") is True
+
     def test_not_capability(self):
         from src.rag.intent import is_capability_query
         assert is_capability_query("工伤怎么认定") is False
