@@ -32,7 +32,10 @@ from src.llm.retry import is_retryable, wait_and_log
 logger = logging.getLogger(__name__)
 
 # 上下文窗口映射: 模型名 → token数
+# 说明: 窗口应取模型真实上下文能力且略保守(留 KV Cache 余量)，
+#       与 Ollama 服务端 num_ctx 保持一致；可用 OLLAMA_NUM_CTX 显式覆盖。
 _OLLAMA_CONTEXT_WINDOWS = {
+    "qwen2.5:3b":         32000,  # 真实 32768，取保守值
     "qwen2.5:7b":         28000,
     "qwen2.5:14b":        60000,
     "qwen2.5:32b":        80000,

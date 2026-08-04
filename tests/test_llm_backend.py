@@ -63,6 +63,14 @@ class TestOllamaBackend:
         assert backend.get_context_window() == 28000  # 默认值
 
     @patch("src.llm.ollama_backend.ollama.Client")
+    def test_qwen25_3b_window(self, mock_client):
+        """qwen2.5:3b 应映射到真实上下文(32000 保守值)"""
+        from src.llm.ollama_backend import OllamaBackend
+        backend = OllamaBackend(model="qwen2.5:3b")
+        assert backend.get_context_window() == 32000
+        assert backend.num_ctx == 32000  # num_ctx 同步生效
+
+    @patch("src.llm.ollama_backend.ollama.Client")
     def test_num_ctx_auto_from_window(self, mock_client):
         """num_ctx 默认 0 → 自动使用模型声明窗口"""
         from src.llm.ollama_backend import OllamaBackend

@@ -84,6 +84,7 @@ FROM query_logs;
 
 - **TokenBudget 接入生产**:`build_budgeted_prompt()` 动态使用模型真实窗口,分段预算(system/记忆+条文/历史),对比查询动态放大检索预算
 - **Ollama num_ctx**:显式下发请求上下文窗口(`OLLAMA_NUM_CTX` 可覆盖),避免服务端 2048 默认静默截断
+- **模型窗口映射补齐**:新增 `qwen2.5:3b → 32000`(真实 32768 取保守值),修复"小模型未映射 → 浪费 ~4K 上下文"问题
 - **历史预算筛选**:按 chat_history 段预算从后往前选,替代固定"6 轮×300 字"
 
 ### 3.3 FAQ 缓存 Redis Stack(已落地)
