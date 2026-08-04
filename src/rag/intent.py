@@ -70,6 +70,14 @@ _CASUAL_PHRASES = {
     "再见", "拜拜", "bye", "goodbye", "走了", "告辞",
 }
 
+# 能力问句模式 — 命中时返回"系统固定能力清单"而非让 LLM 自由发挥
+# （防止 LLM 编造本系统不具备的能力，如写代码/翻译/作图等）。
+_CAPABILITY_PATTERNS = [
+    r'^(你能做什么|你能干什么|你能干哪些事|你会什么|你有什么功能|你有什么能力|你擅长什么|你都会什么|你能帮我什么|你能帮到我什么)',
+    r'^(你有哪些功能|有什么功能|介绍一下你的功能|你能做哪些事|你能帮我做什么)',
+    r'^你能解答.*法律|你能查.*法律|你能检索.*法律',
+]
+
 # 法律关键词 — 包含任一即走检索
 _LEGAL_KEYWORDS = [
     # 法律概念
@@ -195,6 +203,21 @@ def is_casual_query(query: str) -> bool:
 # ---------------------------------------------------------------------------
 # 意图分类（关键词，供 LangGraph Agent）
 # ---------------------------------------------------------------------------
+
+def is_capability_query(query: str) -> bool:
+    """是否为"你能做什么/你有什么功能"类能力问句
+
+    命中此类问句时，应返回系统固定的能力清单（而非让 LLM 自由发挥），
+    避免 LLM 编造本系统不具备的能力（写代码、翻译、作图等）。
+    """
+    q = query.strip()
+    if not q:
+        return False
+    for pattern in _CAPABILITY_PATTERNS:
+        if re.match(pattern, q):
+            return True
+    return False
+
 
 def classify_intent(query: str, history: list | None = None) -> bool:
     """意图识别：是否为法律相关问题？

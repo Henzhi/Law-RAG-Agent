@@ -83,6 +83,29 @@ class TestStateIntegration:
         assert classify_intent("你好") is False
 
 
+class TestCapabilityQuery:
+    """能力问句识别：应走固定能力清单回复，而非 LLM 自由发挥"""
+
+    def test_capability_variants(self):
+        from src.rag.intent import is_capability_query
+        assert is_capability_query("你能做什么") is True
+        assert is_capability_query("你会什么") is True
+        assert is_capability_query("你有什么功能") is True
+        assert is_capability_query("你能干哪些事") is True
+        assert is_capability_query("你能帮我做什么") is True
+
+    def test_not_capability(self):
+        from src.rag.intent import is_capability_query
+        assert is_capability_query("工伤怎么认定") is False
+        assert is_capability_query("你好") is False
+        assert is_capability_query("") is False
+
+    def test_capability_classified_casual(self):
+        """能力问句应被意图识别为闲聊(不检索)"""
+        from src.rag.intent import classify_query_type
+        assert classify_query_type("你能做什么") == "casual"
+
+
 class TestSelfIntroVariants:
     """回归：身份/自我介绍问句变体应正确识别为闲聊，不再误判走 RAG
 
