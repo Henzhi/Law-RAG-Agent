@@ -33,6 +33,7 @@ _engine: RAGEngine | None = None
 _agent: LawAgentGraph | None = None
 _llm: object | None = None  # LLMAdapter，兼容旧 LawLLM 接口
 _memory_mgr: object | None = None  # ConversationMemoryManager | None
+_query_logger: object | None = None  # QueryLogger | None（可观测性）
 
 
 def get_llm():
@@ -129,7 +130,10 @@ def get_engine() -> RAGEngine:
         llm = get_llm()
         embedder = _create_embedder()
         retriever = _create_retriever(embedder)
-        _engine = RAGEngine(retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K)
+        _engine = RAGEngine(
+            retriever=retriever, llm=llm, top_k=RETRIEVAL_TOP_K,
+            query_logger=get_query_logger(),
+        )
         logger.info("RAG 引擎就绪")
     return _engine
 
@@ -142,6 +146,19 @@ def _create_memory_manager(llm, embedder):
     except Exception as e:
         logger.warning(f"记忆管理器初始化失败（pgvector 未就绪？）: {e}")
         return None
+
+
+def get_query_logger():
+    """获取检索质量日志记录器单例（可观测性，失败不影响主流程）"""
+    global _query_logger
+    if _query_logger is None:
+        try:
+            from src.observability.query_log import QueryLogger
+            _query_logger = QueryLogger(conn_string=PG_CONN)
+        except Exception as e:
+            logger.warning(f"QueryLogger 初始化失败（query_logs 表未建？）: {e}")
+            _query_logger = None
+    return _query_logger
 
 
 def _create_faq_cache(embedder):
@@ -196,11 +213,14 @@ def get_agent(force_reload: bool = False) -> LawAgentGraph:
             top_k=RETRIEVAL_TOP_K, max_retries=AGENT_MAX_RETRIES,
             memory_manager=memory_mgr,
             faq_cache=faq_cache,
+            query_logger=get_query_logger(),
         )
         extras = []
         if memory_mgr:
             extras.append("记忆")
         if faq_cache:
             extras.append("FAQ缓存")
+        if get_query_logger():
+            extras.append("可观测性")
         logger.info(f"LangGraph Agent 就绪 ({'/'.join(extras) if extras else '基础模式'})")
     return _agent

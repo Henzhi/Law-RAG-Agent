@@ -5,6 +5,8 @@ RAG 问答引擎。
 """
 from __future__ import annotations
 
+import time
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import Iterator
 
@@ -117,6 +119,7 @@ class RAGEngine:
         llm: LawLLM,
         top_k: int = 5,
         prompt_template: str = RAG_PROMPT_TEMPLATE,
+        query_logger=None,  # QueryLogger | None
     ):
         """
         Args:
@@ -124,11 +127,13 @@ class RAGEngine:
             llm: LLM 客户端
             top_k: 每次检索返回的文档数
             prompt_template: 自定义提示词模板
+            query_logger: 检索质量日志记录器（可观测性）
         """
         self.retriever = retriever
         self.llm = llm
         self.top_k = top_k
         self.prompt_template = prompt_template
+        self._qlog = query_logger
 
     # ------------------------------------------------------------------
     # 问答
@@ -136,27 +141,57 @@ class RAGEngine:
 
     def ask(self, query: str) -> RAGAnswer:
         """单次问答，LLM 自省路由：闲聊直回 / 法律RAG"""
+        qlog = self._qlog
+        with (qlog.trace("", query) if qlog else nullcontext()) as trace:
+            t0 = time.time()
+            need_retrieval = needs_retrieval(query, self.llm)
+            if trace is not None:
+                trace.set_intent("casual" if not need_retrieval else "law_lookup")
+                trace.stage("intent", int((time.time() - t0) * 1000))
 
-        # LLM 自省：是否需要检索？
-        if not needs_retrieval(query, self.llm):
-            answer = self.llm.chat(query, system_prompt=CASUAL_SYSTEM_PROMPT)
-            return RAGAnswer(query=query, answer=answer, is_casual=True)
+            # LLM 自省：是否需要检索？
+            if not need_retrieval:
+                answer = self.llm.chat(query, system_prompt=CASUAL_SYSTEM_PROMPT)
+                if trace is not None:
+                    trace.finalize(faq_cache_hit=False, retrieved_count=0)
+                return RAGAnswer(query=query, answer=answer, is_casual=True)
 
-        # 法律 RAG
-        docs = self.retriever.search(query, top_k=self.top_k)
-        prompt = self._build_prompt(query, docs)
-        answer = self.llm.chat(prompt)
-        return RAGAnswer(query=query, answer=answer, sources=docs)
+            # 法律 RAG
+            t1 = time.time()
+            docs = self.retriever.search(query, top_k=self.top_k)
+            if trace is not None:
+                trace.stage("retrieve", int((time.time() - t1) * 1000))
+            prompt = self._build_prompt(query, docs)
+            t2 = time.time()
+            answer = self.llm.chat(prompt)
+            if trace is not None:
+                trace.stage("generate", int((time.time() - t2) * 1000))
+                trace.finalize(retrieved_count=len(docs), reranked_count=0, faq_cache_hit=False)
+            return RAGAnswer(query=query, answer=answer, sources=docs)
 
     def ask_stream(self, query: str) -> Iterator[str]:
         """流式问答，LLM 自省路由"""
-        if not needs_retrieval(query, self.llm):
-            yield from self.llm.chat_stream(query, system_prompt=CASUAL_SYSTEM_PROMPT)
-            return
+        qlog = self._qlog
+        with (qlog.trace("", query) if qlog else nullcontext()) as trace:
+            t0 = time.time()
+            need_retrieval = needs_retrieval(query, self.llm)
+            if trace is not None:
+                trace.set_intent("casual" if not need_retrieval else "law_lookup")
+                trace.stage("intent", int((time.time() - t0) * 1000))
+            if not need_retrieval:
+                yield from self.llm.chat_stream(query, system_prompt=CASUAL_SYSTEM_PROMPT)
+                if trace is not None:
+                    trace.finalize(faq_cache_hit=False, retrieved_count=0)
+                return
 
-        docs = self.retriever.search(query, top_k=self.top_k)
-        prompt = self._build_prompt(query, docs)
-        yield from self.llm.chat_stream(prompt)
+            t1 = time.time()
+            docs = self.retriever.search(query, top_k=self.top_k)
+            if trace is not None:
+                trace.stage("retrieve", int((time.time() - t1) * 1000))
+            prompt = self._build_prompt(query, docs)
+            yield from self.llm.chat_stream(prompt)
+            if trace is not None:
+                trace.finalize(retrieved_count=len(docs), reranked_count=0, faq_cache_hit=False)
 
     # ------------------------------------------------------------------
     # 多轮对话
@@ -176,13 +211,23 @@ class RAGEngine:
         Returns:
             RAGAnswer
         """
-        docs = self.retriever.search(query, top_k=self.top_k)
-        prompt = self._build_prompt(query, docs)
+        qlog = self._qlog
+        with (qlog.trace("", query) if qlog else nullcontext()) as trace:
+            t0 = time.time()
+            docs = self.retriever.search(query, top_k=self.top_k)
+            if trace is not None:
+                trace.set_intent("law_lookup")
+                trace.stage("retrieve", int((time.time() - t0) * 1000))
+            prompt = self._build_prompt(query, docs)
 
-        history = history or []
-        answer = self.llm.chat(prompt, history=history)
+            history = history or []
+            t1 = time.time()
+            answer = self.llm.chat(prompt, history=history)
+            if trace is not None:
+                trace.stage("generate", int((time.time() - t1) * 1000))
+                trace.finalize(retrieved_count=len(docs), reranked_count=0, faq_cache_hit=False)
 
-        return RAGAnswer(query=query, answer=answer, sources=docs)
+            return RAGAnswer(query=query, answer=answer, sources=docs)
 
     def chat_stream(
         self,
@@ -190,10 +235,18 @@ class RAGEngine:
         history: list[LLMMessage] | None = None,
     ) -> Iterator[str]:
         """多轮流式对话"""
-        docs = self.retriever.search(query, top_k=self.top_k)
-        prompt = self._build_prompt(query, docs)
-        history = history or []
-        yield from self.llm.chat_stream(prompt, history=history)
+        qlog = self._qlog
+        with (qlog.trace("", query) if qlog else nullcontext()) as trace:
+            t0 = time.time()
+            docs = self.retriever.search(query, top_k=self.top_k)
+            if trace is not None:
+                trace.set_intent("law_lookup")
+                trace.stage("retrieve", int((time.time() - t0) * 1000))
+            prompt = self._build_prompt(query, docs)
+            history = history or []
+            yield from self.llm.chat_stream(prompt, history=history)
+            if trace is not None:
+                trace.finalize(retrieved_count=len(docs), reranked_count=0, faq_cache_hit=False)
 
     # ------------------------------------------------------------------
     # 内部方法
