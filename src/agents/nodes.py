@@ -10,7 +10,7 @@ import logging
 
 from src.agents.state import AgentState
 from src.agents.prompts import VALIDATOR_PROMPT
-from src.rag.intent import classify_intent, classify_query_type, is_capability_query
+from src.rag.intent import classify_intent, classify_query_type, is_capability_query, CAPABILITY_REPLY
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
 from src.llm.client import Message as LLMMessage
 from src.memory.token_budget import TokenBudget
@@ -21,24 +21,6 @@ logger = logging.getLogger(__name__)
 _HISTORY_MSG_MAX_CHARS = 300
 # 送入 LLM 的历史最大轮数（预算内再按 token 收紧）
 _HISTORY_MAX_TURNS = 6
-
-# 能力问句的固定回复（系统能力边界清单）。
-# 直接返回而非调 LLM，避免 LLM 编造本系统不具备的能力（写代码/翻译/作图等）。
-CAPABILITY_REPLY = """我可以帮你解答中国法律法规相关的问题，具体能力包括：
-
-📚 **法律条文查询**
-- 查询特定法律条款的具体内容（如"民法典关于违约金的规定"）
-- 支持 30+ 部常见法律：民法典、刑法、劳动法、劳动合同法、治安管理处罚法等
-
-⚖️ **法律咨询**
-- 就具体行为/情形判断是否违法、责任归属（如"打架被拘留，最长多久？"）
-- 婚姻、合同、劳动、工伤、继承等常见民事纠纷
-
-🔎 **法规细节检索**
-- 精确引用法律名称、章节、条款号
-- 结合上下文给出针对性解答
-
-我基于中国现行法律法规的公开文本提供参考信息。请注意：**我的回答仅供参考，不构成专业法律意见**；涉及重大权益的具体事务，建议咨询执业律师。"""
 
 
 # ---------------------------------------------------------------------------

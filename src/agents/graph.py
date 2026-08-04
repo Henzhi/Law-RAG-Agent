@@ -25,7 +25,7 @@ from src.agents.state import AgentState
 from src.agents.nodes import make_nodes, build_hierarchical_context, build_budgeted_prompt
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
-from src.rag.intent import classify_intent, classify_query_type
+from src.rag.intent import classify_intent, classify_query_type, is_capability_query, CAPABILITY_REPLY
 from src.memory.hallucination_guard import HallucinationGuard
 
 logger = logging.getLogger(__name__)
@@ -190,6 +190,13 @@ class LawAgentGraph:
 
             if not is_legal:
                 yield {"type": "thinking", "content": "📝 直接回复，无需检索"}
+                # 能力问句 → 固定能力清单（不调 LLM，避免编造系统不具备的能力）
+                if is_capability_query(query):
+                    yield {"type": "token", "content": CAPABILITY_REPLY}
+                    yield {"type": "thinking", "content": "✅ 完成"}
+                    if trace is not None:
+                        trace.finalize(faq_cache_hit=False, retrieved_count=0)
+                    return
                 # 闲聊也带上历史，让 LLM 结合上下文（如自我介绍后问"我是谁"）
                 for token in self.llm.chat_stream(query, history=history or []):
                     yield {"type": "token", "content": token}

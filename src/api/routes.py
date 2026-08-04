@@ -23,7 +23,7 @@ from .models import ChatRequest, ChatResponse, CancelRequest, HealthResponse, Re
 from .auth import get_current_user, require_registered_user, register_user, login_user
 from src.config import AGENT_ENABLED, LLM_MAX_CONCURRENCY
 from src.rag.engine import needs_retrieval
-from src.rag.intent import sanitize_input
+from src.rag.intent import sanitize_input, is_capability_query, CAPABILITY_REPLY
 from src.llm.client import Message
 
 router = APIRouter()
@@ -154,7 +154,11 @@ def chat(req: ChatRequest):
 
         t_route = time.perf_counter()
         if not needs_retrieval(req.query, engine.llm):
-            answer = engine.llm.chat(req.query, history=history)
+            # 能力问句("你能做什么") → 固定能力清单，不调 LLM（避免编造系统不具备的能力）
+            if is_capability_query(req.query):
+                answer = CAPABILITY_REPLY
+            else:
+                answer = engine.llm.chat(req.query, history=history)
             elapsed = (time.perf_counter() - t_start) * 1000
             perf_logger.info(
                 f"[chat] mode=casual query_len={len(req.query)} "
@@ -366,6 +370,11 @@ def _iter_engine_stream(engine, query: str, history: list) -> Iterator[dict]:
     if casual:
         yield {"type": "meta", "sources": [], "is_casual": True}
         yield {"type": "thinking", "content": "直接回复，无需检索"}
+        # 能力问句("你能做什么") → 固定能力清单，不调 LLM（避免编造系统不具备的能力）
+        if is_capability_query(query):
+            yield {"type": "token", "content": CAPABILITY_REPLY}
+            yield {"type": "thinking", "content": "完成"}
+            return
         for token in engine.llm.chat_stream(query, history=history):
             yield {"type": "token", "content": token}
         yield {"type": "thinking", "content": "完成"}

@@ -105,6 +105,17 @@ class TestCapabilityQuery:
         from src.rag.intent import classify_query_type
         assert classify_query_type("你能做什么") == "casual"
 
+    def test_capability_reply_mentions_real_capabilities_only(self):
+        """固定能力回复应只包含系统真实能力(法律问答),不出现编造能力"""
+        from src.rag.intent import CAPABILITY_REPLY
+        assert "法律" in CAPABILITY_REPLY
+        # 不应出现系统不具备的能力表述
+        assert "写代码" not in CAPABILITY_REPLY
+        assert "翻译" not in CAPABILITY_REPLY
+        assert "作诗" not in CAPABILITY_REPLY
+        # 应含免责声明
+        assert "不构成专业法律意见" in CAPABILITY_REPLY
+
 
 class TestSelfIntroVariants:
     """回归：身份/自我介绍问句变体应正确识别为闲聊，不再误判走 RAG
