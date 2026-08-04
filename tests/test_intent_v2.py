@@ -81,3 +81,58 @@ class TestStateIntegration:
         from src.rag.intent import classify_intent
         assert classify_intent("工伤怎么认定") is True
         assert classify_intent("你好") is False
+
+
+class TestSelfIntroVariants:
+    """回归：身份/自我介绍问句变体应正确识别为闲聊，不再误判走 RAG
+
+    复现：用户连续说"你好，我是小哈"→"你能做什么？"→"你还记得我是谁吗"
+    原 bug：第三句因"你还记得我是谁吗"未匹配任何身份问句模式，走 RAG 报"未找到法律条文"。
+    """
+
+    def test_recall_with_interposed_zi(self):
+        from src.rag.intent import classify_query_type
+        assert classify_query_type("你还记得我是谁吗") == "casual"
+        assert classify_query_type("你还记得我") == "casual"
+        assert classify_query_type("还记得我是谁") == "casual"
+
+    def test_recall_variants(self):
+        from src.rag.intent import classify_query_type
+        assert classify_query_type("你知道我是谁") == "casual"
+        assert classify_query_type("你记得我吗") == "casual"
+        assert classify_query_type("我叫什么名字") == "casual"
+        assert classify_query_type("我的姓名") == "casual"
+
+
+class TestContextualCasualSkipsAssistant:
+    """回归：history 末尾是 AI 回复时，仍能找到最近 user 消息做延续性闲聊判断
+
+    原 bug：_history_suggests_casual 只看 history[-1]，遇到 AI 回复直接放弃。
+    修复：从后往前遍历，跳过 assistant 消息找到最近 user 消息。
+    """
+
+    def test_contextual_casual_with_assistant_last(self):
+        """history 末尾是 AI 回复时,跳过 AI 找到最近 user 消息("我是小哈")→ 延续
+
+        原 bug：取 history[-1](AI 回复) role != user 直接放弃。
+        修复：从后往前遍历，找到以"我是/我叫/你好"开头的最近 user 消息。
+        """
+        from src.rag.intent import classify_query_type
+        history = [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！"},
+            {"role": "user", "content": "我是小哈"},
+            {"role": "assistant", "content": "好的小哈！"},  # 末尾是 AI 回复
+        ]
+        # "那我呢" 不被身份模式直接命中(以"那"开头),依赖 history 延续判断
+        assert classify_query_type("那我呢", history=history) == "casual"
+
+    def test_contextual_casual_with_assistant_only_last(self):
+        """仅 1 条 user + 1 条 assistant,query 必须靠延续才能判为 casual"""
+        from src.rag.intent import classify_query_type
+        history = [
+            {"role": "user", "content": "我叫小张"},
+            {"role": "assistant", "content": "好的，小张"},
+        ]
+        # "那你呢" 不被任何身份/问候模式直接命中,只能靠 history 延续
+        assert classify_query_type("那你呢", history=history) == "casual"

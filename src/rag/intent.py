@@ -45,9 +45,10 @@ _CASUAL_PATTERNS = [
 # 不进入 _CASUAL_PATTERNS：避免影响 RAGEngine 的 needs_retrieval 快路径
 # （"我是农民工"这类短句在非 Agent 路径仍交给 LLM 自省判断，防止误伤真实法律咨询）。
 _SELF_INTRO_PATTERNS = [
-    # 反身/身份问句
+    # 反身/身份问句（覆盖顺序词插入等变体："你还记得我是谁吗"等）
     r'^(我是谁|我是干什么的|我是做什么的|我是什么人|我是你|我是什么)',
-    r'^(你认识我|你知道我是谁|还记得我吗|你记得我吗|我叫什么|我姓什么|我的名字)',
+    r'^(你认识我|你知道我是谁|你知道我|你记得我|你还记得我|还记得我|还记得我是谁|还记得我是谁吗)',
+    r'^(我叫什么|我叫什么名字|我叫什么名|我姓什么|我姓|我的名字|我的姓名)',
     # 短自我介绍（≤6 字，如"我是痕至""我叫小明""我姓王"）
     r'^(我是|我叫|我姓).{0,4}$',
 ]
@@ -304,25 +305,30 @@ def classify_query_type(query: str, history: list | None = None) -> str:
 
 
 def _history_suggests_casual(history: list) -> bool:
-    """历史中最近的用户消息是问候或自我介绍（供延续性闲聊判断）"""
+    """历史中最近的用户消息是问候或自我介绍（供延续性闲聊判断）
+
+    跳过中间的助手回复,从后往前找最近一条 user 消息。
+    修复：当 history[-1] 是 AI 回复时不会直接放弃判断。
+    """
     if not history:
         return False
-    last = history[-1]
-    if isinstance(last, dict):
-        role = last.get("role", "")
-        content = str(last.get("content", ""))
-    else:
-        role = getattr(last, "role", "")
-        content = str(getattr(last, "content", ""))
-    if role != "user":
-        return False
-    c = content.strip()
-    if not c:
-        return False
-    return bool(
-        re.match(r'^(你好|您好|hi|hello|嗨|嗨喽)', c, re.IGNORECASE)
-        or re.match(r'^(我是|我叫|我姓)', c)
-    )
+    for last in reversed(history):
+        if isinstance(last, dict):
+            role = last.get("role", "")
+            content = str(last.get("content", ""))
+        else:
+            role = getattr(last, "role", "")
+            content = str(getattr(last, "content", ""))
+        if role != "user":
+            continue
+        c = content.strip()
+        if not c:
+            return False
+        return bool(
+            re.match(r'^(你好|您好|hi|hello|嗨|嗨喽)', c, re.IGNORECASE)
+            or re.match(r'^(我是|我叫|我姓)', c)
+        )
+    return False
 
 
 def _is_contextual_casual(query: str, history: list) -> bool:
