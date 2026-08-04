@@ -89,14 +89,15 @@ _CAPABILITY_KEYWORDS = [
     "能提供什么", "能处理什么",
 ]
 
-# 能力问句的固定回复（系统能力边界清单）。
+# 能力问句的固定回复模板（系统能力边界清单）。
 # 直接返回而非调 LLM，避免 LLM 编造本系统不具备的能力（写代码/翻译/作图等）。
 # 供 routes / nodes / graph 各层 casual 出口统一使用，保证所有路径行为一致。
-CAPABILITY_REPLY = """我可以帮你解答中国法律法规相关的问题，具体能力包括：
+# 法律数量 {count} 由 get_capability_reply() 运行时从知识库动态获取。
+_CAPABILITY_REPLY_TEMPLATE = """我可以帮你解答中国法律法规相关的问题，具体能力包括：
 
 📚 **法律条文查询**
 - 查询特定法律条款的具体内容（如"民法典关于违约金的规定"）
-- 覆盖 900+ 部法律、行政法规与司法解释：民法典、刑法、劳动法、劳动合同法、治安管理处罚法等
+- 覆盖 {count} 部法律、行政法规与司法解释：民法典、刑法、劳动法、劳动合同法、治安管理处罚法等
 
 ⚖️ **法律咨询**
 - 就具体行为/情形判断是否违法、责任归属（如"打架被拘留，最长多久？"）
@@ -107,6 +108,57 @@ CAPABILITY_REPLY = """我可以帮你解答中国法律法规相关的问题，�
 - 结合上下文给出针对性解答
 
 我基于中国现行法律法规的公开文本提供参考信息。请注意：**我的回答仅供参考，不构成专业法律意见**；涉及重大权益的具体事务，建议咨询执业律师。"""
+
+# 动态获取法律数量的缓存（60s 内不重复查库）
+_capability_count_cache: dict = {"count": None, "ts": 0.0}
+_CAPABILITY_COUNT_TTL = 60.0
+
+
+def _fetch_law_count() -> int | None:
+    """查询知识库中法律/行政法规/司法解释数量（不含案例）
+
+    Returns:
+        文档数量；查询失败返回 None（调用方回退到默认值）
+    """
+    import time
+    now = time.time()
+    cached = _capability_count_cache.get("count")
+    if cached is not None and now - _capability_count_cache.get("ts", 0) < _CAPABILITY_COUNT_TTL:
+        return cached
+
+    count = None
+    try:
+        from src.config import PG_CONN
+        import psycopg2
+        conn = psycopg2.connect(PG_CONN)
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM documents "
+                    "WHERE doc_type IN ('law', 'regulation', 'judicial_interpretation', 'constitution')"
+                )
+                row = cur.fetchone()
+                count = int(row[0]) if row else None
+        finally:
+            conn.close()
+        _capability_count_cache["count"] = count
+        _capability_count_cache["ts"] = now
+    except Exception:
+        # 查询失败不阻塞能力回复，回退默认值
+        count = None
+    return count
+
+
+def get_capability_reply() -> str:
+    """能力问句的固定回复（法律数量动态取自知识库）
+
+    Returns:
+        带实际法律数量的能力清单文本
+    """
+    count = _fetch_law_count()
+    if count is None or count <= 0:
+        count = "900+"
+    return _CAPABILITY_REPLY_TEMPLATE.format(count=count)
 
 # 法律关键词 — 包含任一即走检索
 _LEGAL_KEYWORDS = [

@@ -127,14 +127,54 @@ class TestCapabilityQuery:
 
     def test_capability_reply_mentions_real_capabilities_only(self):
         """固定能力回复应只包含系统真实能力(法律问答),不出现编造能力"""
-        from src.rag.intent import CAPABILITY_REPLY
-        assert "法律" in CAPABILITY_REPLY
+        from src.rag.intent import get_capability_reply
+        reply = get_capability_reply()
+        assert "法律" in reply
         # 不应出现系统不具备的能力表述
-        assert "写代码" not in CAPABILITY_REPLY
-        assert "翻译" not in CAPABILITY_REPLY
-        assert "作诗" not in CAPABILITY_REPLY
+        assert "写代码" not in reply
+        assert "翻译" not in reply
+        assert "作诗" not in reply
         # 应含免责声明
-        assert "不构成专业法律意见" in CAPABILITY_REPLY
+        assert "不构成专业法律意见" in reply
+
+    def test_capability_reply_dynamic_count_fallback(self):
+        """DB 不可用时回退默认 900+;模板含动态占位符"""
+        from unittest.mock import patch
+        from src.rag.intent import (
+            _CAPABILITY_REPLY_TEMPLATE, _capability_count_cache, get_capability_reply,
+        )
+        assert "{count}" in _CAPABILITY_REPLY_TEMPLATE  # 动态占位
+        # 模拟 DB 不可用 → 回退 900+
+        _capability_count_cache.update({"count": None, "ts": 0.0})
+        with patch("psycopg2.connect", side_effect=Exception("db down")):
+            reply = get_capability_reply()
+            assert "900+" in reply
+            assert "不构成专业法律意见" in reply
+
+    def test_fetch_law_count_query(self):
+        """_fetch_law_count 应查询 documents 表(不含案例),失败返回 None"""
+        from unittest.mock import MagicMock, patch
+        from src.rag.intent import _fetch_law_count, _capability_count_cache
+
+        _capability_count_cache.update({"count": None, "ts": 0.0})
+        with patch("psycopg2.connect") as mock_connect:
+            fake_conn = mock_connect.return_value
+            fake_cursor = MagicMock()
+            fake_cursor.__enter__.return_value = fake_cursor  # with 进入同一 mock
+            fake_cursor.fetchone.return_value = (985,)
+            fake_conn.cursor.return_value = fake_cursor
+
+            count = _fetch_law_count()
+            assert count == 985
+            # 校验 SQL 排除了 case 类型
+            sql = fake_cursor.execute.call_args[0][0]
+            assert "FROM documents" in sql
+            assert "case" not in sql.split("IN (")[1].split(")")[0]  # IN 列表无 case
+
+        # 查询异常时返回 None
+        _capability_count_cache.update({"count": None, "ts": 0.0})
+        with patch("psycopg2.connect", side_effect=Exception("db down")):
+            assert _fetch_law_count() is None
 
 
 class TestSelfIntroVariants:

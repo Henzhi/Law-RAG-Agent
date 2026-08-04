@@ -10,7 +10,7 @@ import logging
 
 from src.agents.state import AgentState
 from src.agents.prompts import VALIDATOR_PROMPT
-from src.rag.intent import classify_intent, classify_query_type, is_capability_query, CAPABILITY_REPLY
+from src.rag.intent import classify_intent, classify_query_type, is_capability_query, get_capability_reply
 from src.rag.engine import RAG_PROMPT_TEMPLATE, CASUAL_SYSTEM_PROMPT
 from src.llm.client import Message as LLMMessage
 from src.memory.token_budget import TokenBudget
@@ -219,7 +219,7 @@ def make_nodes(llm, retriever, memory_manager, top_k: int = 5, max_retries: int 
         query = state["query"]
         # 能力问句：返回系统固定能力清单（不调 LLM，避免编造不存在的能力）
         if is_capability_query(query):
-            return {"answer": CAPABILITY_REPLY, "validation_passed": True}
+            return {"answer": get_capability_reply(), "validation_passed": True}
         answer = llm.chat(query, system_prompt=CASUAL_SYSTEM_PROMPT)
         return {"answer": answer, "validation_passed": True}
 
