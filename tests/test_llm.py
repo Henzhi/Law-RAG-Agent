@@ -1,7 +1,7 @@
 """LLM 客户端单元测试 — Message / LLMConfig / LawLLM._build_messages 纯函数"""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 from src.llm.client import Message, LLMConfig, LawLLM, LAW_SYSTEM_PROMPT
 
 

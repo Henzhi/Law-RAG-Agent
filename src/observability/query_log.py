@@ -17,7 +17,6 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

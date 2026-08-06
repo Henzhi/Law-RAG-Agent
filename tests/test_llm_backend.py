@@ -10,7 +10,7 @@ LLM 后端抽象层基础验证测试。
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 class TestLLMBackendImports:
@@ -282,7 +282,7 @@ class TestAdapterHistoryNormalization:
 
     def test_adapter_passes_normalized_history(self):
         """端到端：适配器收到 LLMMessage 历史 → 后端收到 dict"""
-        from src.llm.adapter import LLMAdapter, _normalize_history
+        from src.llm.adapter import LLMAdapter
         from src.llm.client import Message as LLMMessage
 
         # 用一个最小可调用的假后端

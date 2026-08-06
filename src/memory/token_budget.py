@@ -13,7 +13,6 @@ Token 预算管理器 (v0.5)。
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import tiktoken
 

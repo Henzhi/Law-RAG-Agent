@@ -52,8 +52,7 @@ class TestChunkPagination:
     """get_document_chunks 分页：验证 LIMIT/OFFSET 拼接与参数传递（不连真实 PG）"""
 
     def _make_store_with_mock(self, fetched):
-        import types
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         from src.knowledge.pgvector_store import PgvectorStore
 
         store = PgvectorStore.__new__(PgvectorStore)

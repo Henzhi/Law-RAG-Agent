@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import threading
 from functools import wraps
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 

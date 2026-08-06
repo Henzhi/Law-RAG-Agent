@@ -179,7 +179,7 @@ class TestPipelineSplit:
 
 class TestValidation:
     def test_allowed_extensions(self):
-        from src.knowledge.ingestion.pipeline import IngestionPipeline, ALLOWED_EXTENSIONS
+        from src.knowledge.ingestion.pipeline import ALLOWED_EXTENSIONS
         assert ".pdf" in ALLOWED_EXTENSIONS
         assert ".docx" in ALLOWED_EXTENSIONS
         assert ".txt" in ALLOWED_EXTENSIONS

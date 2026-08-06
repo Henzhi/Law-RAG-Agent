@@ -3,7 +3,6 @@
 不依赖 PostgreSQL / 主应用 lifespan（那部分需要 PG 才能启动），
 只验证路由绑定、Pydantic 解析与真实 LLM 改写链路。
 """
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 

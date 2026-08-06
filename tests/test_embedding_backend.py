@@ -10,7 +10,7 @@ Embedding 后端抽象层基础验证测试。
 from __future__ import annotations
 
 import os
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 
 class TestEmbeddingBackendImports:

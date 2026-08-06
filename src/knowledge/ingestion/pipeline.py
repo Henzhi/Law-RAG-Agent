@@ -10,7 +10,6 @@ import logging
 import re
 import uuid
 from pathlib import Path
-from typing import Optional
 
 from src.knowledge.ingestion.pdf_parser import PDFParser
 from src.knowledge.ingestion.docx_parser import DocxParser
@@ -179,7 +178,6 @@ class IngestionPipeline:
             {law_name: {article_number_int: {content, article_range, chapter, section}}}
         """
         try:
-            from src.rag.adjacent_expander import AdjacentExpander
             from pathlib import Path
             import json as _json
 

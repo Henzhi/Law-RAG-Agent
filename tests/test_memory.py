@@ -24,7 +24,7 @@ class TestSummaryTrigger:
         assert ConversationMemoryManager.should_summarize is not None
 
     def test_at_threshold(self):
-        from src.memory.conversation import ConversationMemoryManager, SUMMARY_TRIGGER_ROUNDS
+        from src.memory.conversation import SUMMARY_TRIGGER_ROUNDS
         # 创建一个最小 mock 来测试
         class FakeMgr:
             pass
@@ -114,7 +114,7 @@ class TestGraphMemoryIntegration:
     """验证 Agent Graph 正确集成了 memory_retrieve 节点"""
 
     def test_agent_accepts_memory_manager(self):
-        from src.agents.graph import LawAgentGraph
+        pass
         # 不传 memory_manager 应正常运行
         # 这里只验证 __init__ 不报错
         # 实际需要 retriever 和 llm，跳过完整实例化

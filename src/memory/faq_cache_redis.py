@@ -133,7 +133,7 @@ class FAQCacheRedis:
 
             # redis-py 8.x：向量参数通过 search(query, query_params=...) 传入
             res = self._client.ft(_INDEX_NAME).search(
-                Query(f"*=>[KNN 1 @question_embed $vec AS score]")
+                Query("*=>[KNN 1 @question_embed $vec AS score]")
                 .sort_by("score")
                 .return_fields(
                     "id", "question", "answer", "sources",

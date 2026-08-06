@@ -56,7 +56,6 @@ def _is_network_error(exc: BaseException) -> bool:
     if any(k in name for k in ("timeout", "connection", "connecterror", "network")):
         return True
 
-    import socket
 
     if isinstance(exc, (ConnectionError, TimeoutError, OSError)):
         # OSError 可能是磁盘/权限等，但连接相关大概率可重试；保守放行

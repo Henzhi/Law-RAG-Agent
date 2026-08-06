@@ -13,7 +13,7 @@ from typing import Iterator
 from src.llm.client import LawLLM, Message as LLMMessage
 from src.memory.token_budget import TokenBudget
 from .retriever import BaseRetriever, RetrievedDoc
-from .intent import is_casual_query, needs_retrieval
+from .intent import needs_retrieval
 
 
 # ---------------------------------------------------------------------------

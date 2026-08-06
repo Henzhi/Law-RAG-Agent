@@ -25,7 +25,7 @@ from src.agents.state import AgentState
 from src.agents.nodes import make_nodes, build_hierarchical_context, build_budgeted_prompt
 from src.rag.retriever import BaseRetriever
 from src.rag.engine import RAG_PROMPT_TEMPLATE
-from src.rag.intent import classify_intent, classify_query_type, is_capability_query, get_capability_reply
+from src.rag.intent import classify_query_type, is_capability_query, get_capability_reply
 from src.memory.hallucination_guard import HallucinationGuard
 
 logger = logging.getLogger(__name__)

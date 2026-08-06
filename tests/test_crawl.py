@@ -88,7 +88,6 @@ def test_crawl_auto_skip_existing_by_status():
     """自动分类 + 跳过已入库：同标题同状态跳过，不同效力版本各自入库"""
     import tempfile
     from unittest import mock
-    from pathlib import Path
 
     from src.knowledge.crawler.npc_crawler import NpcLawCrawler
 

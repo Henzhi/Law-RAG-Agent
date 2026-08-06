@@ -425,12 +425,20 @@ async def chat_stream(req: ChatRequest, request: Request):
     if AGENT_ENABLED:
         agent = get_agent()
         safe_history = _sanitize_history(req.history)
-        gen_factory: Callable[[], Iterator[dict]] = lambda: agent.stream(safe_query, history=safe_history)
+
+        def _agent_gen() -> Iterator[dict]:
+            return agent.stream(safe_query, history=safe_history)
+
+        gen_factory: Callable[[], Iterator[dict]] = _agent_gen
         mode = "agent"
     else:
         engine = get_engine()
         history = _dicts_to_messages(_sanitize_history(req.history))
-        gen_factory = lambda: _iter_engine_stream(engine, safe_query, history)
+
+        def _rag_gen() -> Iterator[dict]:
+            return _iter_engine_stream(engine, safe_query, history)
+
+        gen_factory: Callable[[], Iterator[dict]] = _rag_gen
         mode = "rag"
 
     # 可靠的断开检测：直接监听 ASGI http.disconnect 事件。
@@ -715,7 +723,7 @@ async def upload_document(
     max_size = 50 * 1024 * 1024  # 50MB
     content = await file.read(max_size + 1)
     if len(content) > max_size:
-        raise HTTPException(400, f"文件过大（限制 50MB）")
+        raise HTTPException(400, "文件过大（限制 50MB）")
 
     # 保存到临时文件
     suffix = ext if ext else ".txt"

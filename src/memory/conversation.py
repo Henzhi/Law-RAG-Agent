@@ -18,7 +18,6 @@ import json
 import logging
 import threading
 from functools import wraps
-from typing import List
 
 import psycopg2
 from pgvector.psycopg2 import register_vector

@@ -21,7 +21,6 @@ from __future__ import annotations
 import logging
 import threading
 from functools import wraps
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
