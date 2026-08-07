@@ -1,7 +1,8 @@
 """RAG 引擎单元测试 — is_casual_query / _build_prompt / _extract_core 纯函数"""
 
 import pytest
-from src.rag.engine import is_casual_query, RAGAnswer, RAGEngine
+from src.rag.intent import is_casual_query
+from src.rag.engine import RAGAnswer, RAGEngine
 from src.rag.retriever import RetrievedDoc
 from src.rag.adjacent_expander import AdjacentExpander
 
