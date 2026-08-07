@@ -176,7 +176,8 @@ def test_save_format_and_manifest_roundtrip(tmp_path: Path):
 
     # 文件名非法字符被清洗（如含 / 或 : 的标题）
     rel2 = crawler._save(out_dir, "id002", '测试/法:规"', "内容", "")
-    assert "/" not in rel2 and ":" not in rel2
+    # 只校验文件名部分（返回值为相对路径，目录分隔符在 Windows/Linux 上不同）
+    assert "/" not in Path(rel2).name and ":" not in Path(rel2).name
 
 
 # ---------------------------------------------------------------------------
